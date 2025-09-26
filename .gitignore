@@ -211,11 +211,11 @@ __marimo__/
 
 
 # Node / Vite
-  node_modules/
-  dist/
-  .vite/
-  *.log           # 프론트용 별도 로그 무시 필요 시
-  .env.local
+node_modules/
+dist/
+.vite/
+*.log          
+.env.local
 
-  # macOS
-  .DS_Store
+# macOS
+.DS_Store
