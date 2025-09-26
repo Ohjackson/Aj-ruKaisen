@@ -1,0 +1,23 @@
+{
+  "forbidden": [
+    "정답",
+    "answer",
+    "공개",
+    "비밀"
+  ],
+  "spoilers": [
+    "azure",
+    "kaisen",
+    "에저",
+    "회전"
+  ],
+  "noise": [
+    "asdf",
+    "테스트"
+  ],
+  "penalties": {
+    "forbidden": -1,
+    "too_direct": -1,
+    "off_topic": 0
+  }
+}

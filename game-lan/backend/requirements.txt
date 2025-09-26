@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pydantic
+anyio
+websockets
+python-multipart
+pypdf
+regex
