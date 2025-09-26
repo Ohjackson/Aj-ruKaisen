@@ -351,5 +351,51 @@ class GameState:
                 "players": players,
             }
 
+    async def snapshot(self) -> Dict[str, Any]:
+        async with self.lock:
+            data: Dict[str, Any] = {
+                "phase": self.phase,
+                "round": self.round,
+                "turnIndex": self.turn_index,
+                "maxRounds": self.max_rounds,
+                "turnTimerSeconds": self.turn_timer_seconds,
+                "remainingMs": self.remaining_ms,
+                "players": [
+                    {
+                        "id": player.id,
+                        "name": player.name,
+                        "score": player.score,
+                        "lastWord": player.last_word,
+                        "isHost": player.is_host,
+                        "connected": player.connected,
+                        "joinedAt": player.joined_at,
+                    }
+                    for player in self.players.values()
+                ],
+                "rounds": {},
+                "secrets": {
+                    str(idx): {
+                        "stored": idx in self.secrets,
+                        "length": len(self.secrets[idx]) if idx in self.secrets else 0,
+                    }
+                    for idx in range(1, self.max_rounds + 1)
+                },
+            }
+
+            for round_index in range(1, self.max_rounds + 1):
+                submissions = self.submissions.get(round_index, {})
+                data["rounds"][str(round_index)] = {
+                    pid: {
+                        "word": submission.word,
+                        "flags": submission.flags,
+                        "baseScore": submission.base_score,
+                        "extraScores": submission.extra_scores,
+                        "totalScore": submission.total_score,
+                        "hintAvailable": bool(submission.hint),
+                    }
+                    for pid, submission in submissions.items()
+                }
+            return data
+
 
 __all__ = ["GameState", "Player", "Submission"]

@@ -63,9 +63,10 @@ uvicorn app:app --host 0.0.0.0 --port 8000
 - 서버 기동 시 로그에 `http://<LAN_IP>:8000` 과 예상 프론트 URL(`:5173`)이 출력됩니다.
 - 주요 엔드포인트
   - `GET /health` → `{ "status": "ok" }`
-  - `GET /config` → `{ rounds: 3, turnSeconds: 30 }`
-  - `GET /docs/5일차.pdf` → 프론트에서 열람 가능한 강의자료
-  - `WS /ws` → 게임용 JSON 이벤트 스트림
+- `GET /config` → `{ rounds: 3, turnSeconds: 30 }`
+- `GET /docs/5일차.pdf` → 프론트에서 열람 가능한 강의자료
+- `GET /db` → 인메모리 게임 상태 스냅샷(제시어 본문은 미노출)
+- `WS /ws` → 게임용 JSON 이벤트 스트림
 
 ### 2) 프론트엔드 (React + Vite)
 ```bash

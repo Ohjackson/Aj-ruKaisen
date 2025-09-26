@@ -127,6 +127,12 @@ async def get_pdf() -> FileResponse:
     return FileResponse(PDF_PATH)
 
 
+@app.get("/db")
+async def dump_state() -> JSONResponse:
+    snapshot = await state.snapshot()
+    return JSONResponse(snapshot)
+
+
 async def send_room_state() -> None:
     public_state = await state.to_public_state()
     await manager.broadcast({"type": "room.state", "payload": public_state})
