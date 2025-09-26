@@ -7,25 +7,176 @@ import os
 import re
 import socket
 import time
+from collections import deque
+from html import escape
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
+
+DASHBOARD_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Game Dashboard</title>
+    <style>
+        body {{ font-family: sans-serif; }}
+        .container {{ margin: 2em; }}
+        .section {{ margin-bottom: 2em; }}
+        .section h2 {{ border-bottom: 1px solid #ccc; padding-bottom: 0.5em; }}
+        table {{ border-collapse: collapse; width: 100%; }}
+        th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; vertical-align: top; }}
+        th {{ background-color: #f2f2f2; }}
+        pre {{ background: #f7f7f7; padding: 1em; overflow: auto; border: 1px solid #ddd; border-radius: 4px; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Game Dashboard</h1>
+        <div class="section">
+            <h2>Game State</h2>
+            <p><strong>Phase:</strong> {phase}</p>
+            <p><strong>Timer (ms):</strong> {timer_ms}</p>
+            <p><strong>Round:</strong> {round}</p>
+            <p><strong>Max Rounds:</strong> {max_rounds}</p>
+        </div>
+        <div class="section">
+            <h2>Players</h2>
+            <table>
+                <tr>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Host</th>
+                    <th>Connected</th>
+                    <th>Ready</th>
+                    <th>Score</th>
+                </tr>
+                {players_table}
+            </table>
+        </div>
+        <div class="section">
+            <h2>Submissions &amp; Hints</h2>
+            <table>
+                <tr>
+                    <th>Round</th>
+                    <th>Player ID</th>
+                    <th>Word</th>
+                    <th>Score</th>
+                    <th>Flags</th>
+                    <th>Hint</th>
+                </tr>
+                {submissions_table}
+            </table>
+        </div>
+        <div class="section">
+            <h2>Secrets</h2>
+            <table>
+                <tr>
+                    <th>Round</th>
+                    <th>Stored</th>
+                    <th>Length</th>
+                </tr>
+                {secrets_table}
+            </table>
+        </div>
+        <div class="section">
+            <h2>Raw Snapshot</h2>
+            <pre>{raw_snapshot}</pre>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+
+LOG_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Server Log</title>
+    <style>
+        body {{ font-family: sans-serif; padding: 2em; background: #f3f4f6; }}
+        h1 {{ margin-bottom: 1em; }}
+        pre {{ background: #111827; color: #f9fafb; padding: 1.5em; border-radius: 8px; overflow: auto; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }}
+        a {{ color: #2563eb; text-decoration: none; margin-right: 1em; }}
+        a:hover {{ text-decoration: underline; }}
+    </style>
+</head>
+<body>
+    <h1>Server Log</h1>
+    <p><a href="/server/db">게임 대시보드</a><a href="/db">JSON 스냅샷</a></p>
+    <pre>{log_lines}</pre>
+</body>
+</html>
+"""
+
+def load_env_files() -> None:
+    """Populate os.environ using simple .env parsing before other imports."""
+
+    def _parse_env_file(path: Path) -> Dict[str, str]:
+        data: Dict[str, str] = {}
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                if "=" not in stripped:
+                    continue
+                key, value = stripped.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key:
+                    data[key] = value
+        except FileNotFoundError:
+            return {}
+        return data
+
+    base = BASE_DIR.resolve()
+    candidates = []
+    for depth, parent in enumerate((base, *base.parents)):
+        candidates.append(parent / ".env")
+        if depth >= 3:  # limit search to a few levels above backend/
+            break
+    for candidate in candidates:
+        if candidate.exists():
+            entries = _parse_env_file(candidate)
+            for key, value in entries.items():
+                os.environ.setdefault(key, value)
+
+
+BASE_DIR = Path(__file__).resolve().parent
+load_env_files()
 
 try:
-    from .ai.azure_agent import AzureAgent, PlayerResult
+    from .ai.gemini_agent import GeminiAgent, PlayerResult
     from .state import GameState
 except ImportError:  # pragma: no cover
-    from ai.azure_agent import AzureAgent, PlayerResult
+    from ai.gemini_agent import GeminiAgent, PlayerResult
     from state import GameState
 
 
-logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
-logger = logging.getLogger("azure-kaisen")
+LOG_BUFFER: deque[str] = deque(maxlen=500)
 
-BASE_DIR = Path(__file__).resolve().parent
+
+class InMemoryLogHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:  # pragma: no cover - simple collector
+        try:
+            message = self.format(record)
+        except Exception:  # pragma: no cover - defensive fallback
+            message = f"{record.levelname}: {record.getMessage()}"
+        LOG_BUFFER.append(message)
+
+
+LOG_FORMAT = "[%(asctime)s] %(levelname)s %(name)s: %(message)s"
+logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+logger = logging.getLogger("azure-kaisen")
+memory_handler = InMemoryLogHandler()
+memory_handler.setLevel(logging.DEBUG)
+memory_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+logging.getLogger().addHandler(memory_handler)
+
 DOCS_DIR = BASE_DIR / "docs"
 
 
@@ -62,7 +213,7 @@ state = GameState(
     discussion_seconds=DISCUSSION_SECONDS,
     transition_seconds=TRANSITION_SECONDS,
 )
-ai_agent = AzureAgent(pdf_path=PDF_PATH, rules_path=RULES_PATH, hints_enabled=HINTS_ENABLED)
+ai_agent = GeminiAgent(hints_enabled=HINTS_ENABLED)
 
 
 class ConnectionManager:
@@ -154,6 +305,70 @@ async def get_pdf() -> FileResponse:
 async def dump_state() -> JSONResponse:
     snapshot = await state.snapshot()
     return JSONResponse(snapshot)
+
+
+@app.get("/server/db", response_class=HTMLResponse)
+async def server_db_dashboard():
+    snapshot = await state.snapshot()
+    players = snapshot.get("players", [])
+    players_table = ""
+    for p in players:
+        players_table += (
+            "<tr>"
+            f"<td>{p['id']}</td>"
+            f"<td>{escape(p['name'])}</td>"
+            f"<td>{'Yes' if p.get('isHost') else 'No'}</td>"
+            f"<td>{'Yes' if p['connected'] else 'No'}</td>"
+            f"<td>{'Yes' if p['ready'] else 'No'}</td>"
+            f"<td>{p['score']}</td>"
+            "</tr>"
+        )
+
+    submissions = snapshot.get("submissions", {})
+    submissions_table = ""
+    for round_num, round_submissions in submissions.items():
+        for player_id, submission in round_submissions.items():
+            flags = submission.get("flags") or []
+            submissions_table += (
+                "<tr>"
+                f"<td>{round_num}</td>"
+                f"<td>{player_id}</td>"
+                f"<td>{escape(submission.get('word', ''))}</td>"
+                f"<td>{submission.get('score', 0)}</td>"
+                f"<td>{escape(', '.join(flags))}</td>"
+                f"<td>{escape(submission.get('hint') or '')}</td>"
+                "</tr>"
+            )
+
+    secrets = snapshot.get("secrets", {})
+    secrets_table = ""
+    for round_num, secret_info in secrets.items():
+        secrets_table += (
+            "<tr>"
+            f"<td>{round_num}</td>"
+            f"<td>{'Yes' if secret_info.get('stored') else 'No'}</td>"
+            f"<td>{secret_info.get('length', 0)}</td>"
+            "</tr>"
+        )
+
+    raw_snapshot = escape(json.dumps(snapshot, ensure_ascii=False, indent=2))
+
+    return DASHBOARD_TEMPLATE.format(
+        phase=snapshot.get("phase"),
+        timer_ms=snapshot.get("remainingMs"),
+        round=snapshot.get("round"),
+        max_rounds=snapshot.get("max_rounds"),
+        players_table=players_table,
+        submissions_table=submissions_table,
+        secrets_table=secrets_table,
+        raw_snapshot=raw_snapshot,
+    )
+
+
+@app.get("/server/db/log", response_class=HTMLResponse)
+async def server_log_dashboard():
+    log_lines = escape("\n".join(LOG_BUFFER))
+    return LOG_TEMPLATE.format(log_lines=log_lines or "(로그가 없습니다)")
 
 
 # ---------------------------------------------------------------------------
@@ -289,17 +504,29 @@ async def finalize_round(round_index: int, *, reason: str) -> None:
         player_order=player_payload,
     )
 
+    summary_entries = []
+    remaining_results = list(evaluation.results)
     for player in players:
-        result = evaluation.players.get(player.id)
-        if not result:
-            result = PlayerResult(hint="AI 응답을 받지 못했습니다.", score=0, flags=["ai_missing"], meta={"source": evaluation.source})
+        matched = next((res for res in remaining_results if res.user == player.name), None)
+        if not matched and remaining_results:
+            matched = remaining_results[0]
+
+        if not matched:
+            continue
+
+        remaining_results.remove(matched)
+
+        hint_text = matched.hint or ""
+        score_value = matched.score or 0
+        word_value = matched.input or ""
+
         await state.store_hint_result(
             round_index,
             player.id,
-            hint=result.hint,
-            score=result.score,
-            flags=result.flags,
-            meta=result.meta,
+            hint=hint_text,
+            score=score_value,
+            flags=[],  # Gemini response doesn't have flags
+            meta={"source": "gemini"},
         )
         await manager.send_to(
             player.id,
@@ -307,33 +534,33 @@ async def finalize_round(round_index: int, *, reason: str) -> None:
                 "type": "round.result:me",
                 "payload": {
                     "round": round_index,
-                    "hint": result.hint,
-                    "score": result.score,
-                    "flags": result.flags,
-                    "meta": result.meta,
+                    "hint": hint_text,
+                    "score": score_value,
+                    "flags": [],
+                    "meta": {"source": "gemini"},
                 },
             },
         )
-
-    decorated_summary = []
-    for entry in evaluation.summary:
-        entry_copy = dict(entry)
-        pid = entry_copy.get("playerId")
-        if pid:
-            match = next((p for p in players if p.id == pid), None)
-            if match and not entry_copy.get("name"):
-                entry_copy["name"] = match.name
-        decorated_summary.append(entry_copy)
+        summary_entries.append(
+            {
+                "playerId": player.id,
+                "name": player.name,
+                "word": word_value,
+                "score": score_value,
+                "flags": [],
+            }
+        )
 
     summary_payload = {
         "round": round_index,
-        "source": evaluation.source,
-        "entries": decorated_summary,
+        "source": "gemini",
+        "entries": summary_entries,
     }
     await manager.broadcast({"type": "round.summary", "payload": summary_payload})
     await broadcast_state()
 
-    await start_discussion_phase(round_index, evaluation.discussion)
+    # The discussion prompt is not part of the Gemini response, so I'll use a static one.
+    await start_discussion_phase(round_index, "힌트를 공유하고 토론하세요.")
 
 
 # ---------------------------------------------------------------------------
@@ -474,7 +701,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     finally:
         detached_id = await manager.unregister(websocket)
         if detached_id:
-            await state.mark_disconnected(detached_id)
+            await state.remove_player(detached_id)
             await broadcast_state()
 
 

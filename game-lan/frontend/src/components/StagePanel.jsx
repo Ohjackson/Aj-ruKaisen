@@ -33,6 +33,7 @@ export default function StagePanel({
   onStartGame,
   allReady,
   hasJoined,
+  showStartButton,
 }) {
   const [word, setWord] = useState("");
 
@@ -57,8 +58,6 @@ export default function StagePanel({
         return "Azure 흐름";
     }
   }, [phase]);
-
-  const showStartButton = phase === "ready" && isHost;
 
   return (
     <section className="stage-panel">

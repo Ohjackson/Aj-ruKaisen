@@ -219,3 +219,6 @@ dist/
 
 # macOS
 .DS_Store
+
+prompt.txt
+gemini_prompt.txt

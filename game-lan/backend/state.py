@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -9,6 +10,17 @@ from typing import Any, Dict, List, Optional
 
 
 Phase = str
+
+
+def _resolve_host_player_name() -> str:
+    for env_key in ("HOST_PLAYER_NAME", "playerName", "PLAYER_NAME"):
+        value = os.getenv(env_key)
+        if value and value.strip():
+            return value.strip()
+    return "로켓단"
+
+
+HOST_PLAYER_NAME = _resolve_host_player_name()
 
 
 @dataclass
@@ -66,15 +78,23 @@ class GameState:
     # ------------------------------------------------------------------
     # Player management
     # ------------------------------------------------------------------
+    def _sync_host_flags(self) -> None:
+        for player in self.players.values():
+            player.is_host = player.name == HOST_PLAYER_NAME
+
     def _new_player_id(self) -> str:
         return uuid.uuid4().hex
 
     async def add_player(self, name: str, *, existing_id: Optional[str] = None) -> Player:
         async with self.lock:
+            incoming = (name or "").strip()
+
             if existing_id and existing_id in self.players:
                 player = self.players[existing_id]
                 player.connected = True
-                player.name = name or player.name
+                if incoming:
+                    player.name = incoming
+                self._sync_host_flags()
                 return player
 
             if len(self.players) >= 5:
@@ -83,11 +103,11 @@ class GameState:
             player_id = self._new_player_id()
             player = Player(
                 id=player_id,
-                name=name.strip() or "Player",
-                is_host=not any(p.is_host for p in self.players.values()),
+                name=incoming or "Player",
             )
             self.players[player_id] = player
             self.player_order.append(player_id)
+            self._sync_host_flags()
             return player
 
     async def remove_player(self, player_id: str) -> None:
@@ -96,9 +116,7 @@ class GameState:
             if not player:
                 return
             self.player_order = [pid for pid in self.player_order if pid != player_id]
-            if player.is_host and self.players:
-                new_host = min(self.players.values(), key=lambda p: p.joined_at)
-                new_host.is_host = True
+            self._sync_host_flags()
 
     async def mark_disconnected(self, player_id: str) -> None:
         async with self.lock:
@@ -123,9 +141,10 @@ class GameState:
 
     async def all_ready(self) -> bool:
         async with self.lock:
-            if len(self.players) < 2:
+            connected_players = [p for p in self.players.values() if p.connected]
+            if not connected_players:
                 return False
-            return all(p.ready for p in self.players.values() if p.connected)
+            return all(player.ready for player in connected_players)
 
     async def reset_ready(self) -> None:
         async with self.lock:

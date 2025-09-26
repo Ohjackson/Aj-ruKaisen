@@ -74,12 +74,6 @@ export default function App() {
   const wsUrl = useMemo(() => computeWsUrl(apiBase), [apiBase]);
   const latestRoundRef = useRef(0);
 
-  useEffect(() => {
-    if (playerName && playerName === import.meta.env.VITE_HOST_PLAYER_NAME) {
-      setIsHost(true);
-    }
-  }, [playerName]);
-
   const enqueueHint = useCallback((payload) => {
     setHintQueue((prev) => [...prev, payload]);
   }, []);
@@ -174,7 +168,28 @@ export default function App() {
   useEffect(() => {
     const client = new WSClient(wsUrl, {
       onOpen: () => setConnectionStatus("connected"),
-      onClose: () => setConnectionStatus("disconnected"),
+      onClose: () => {
+        setConnectionStatus("disconnected");
+        setPlayerId("");
+        setPlayerName("");
+        setIsHost(false);
+        setPhase("lobby");
+        setRound(0);
+        setTimerMs(0);
+        setPlayers([]);
+        setChatMessages([]);
+        setPrepInfo(null);
+        setDiscussionPrompt("");
+        setRoundSummaries({});
+        setStats(null);
+        setStatsVisible(false);
+        setWinner(null);
+        setHintQueue([]);
+        setActiveHint(null);
+        setLastError("");
+        localStorage.removeItem(STORAGE_ID);
+        localStorage.removeItem(STORAGE_NAME);
+      },
       onError: () => setConnectionStatus("error"),
       onStateChange: (status) => setConnectionStatus(status),
       onMessage: handleMessage,
@@ -203,6 +218,11 @@ export default function App() {
     [sendMessage, playerId]
   );
 
+  useEffect(() => {
+    const self = players.find((p) => p.id === playerId);
+    setIsHost(Boolean(self?.isHost));
+  }, [players, playerId]);
+
   const selfPlayer = useMemo(() => players.find((p) => p.id === playerId), [players, playerId]);
   const allReady = useMemo(() => {
     const connected = players.filter((p) => p.connected);
@@ -216,7 +236,7 @@ export default function App() {
   const canSubmit = phase === "submission";
   const canChat = ["discussion", "lobby", "ready"].includes(phase);
   const canToggleReady = ["lobby", "ready", "end"].includes(phase) && playerId;
-  const showStartButton = phase === "ready" && isHost;
+  const showStartButton = isHost && ["lobby", "ready"].includes(phase);
   const joined = Boolean(playerId);
   const playerCount = players.length;
   const isReady = Boolean(selfPlayer?.ready);
@@ -265,21 +285,14 @@ export default function App() {
           <span className="player-meta">{joined ? playerName : "익명"} · {playerCount}명</span>
           {lastError && <span className="error-pill">{lastError}</span>}
         </div>
-        <div className="control-block">
-          <button onClick={handleRequestStats} disabled={!joined}>
-            통계
-          </button>
-          <a className="pdf-link" href={`${apiBase}/docs/5일차.pdf`} target="_blank" rel="noreferrer">
-            강의자료
-          </a>
-        </div>
+
       </header>
 
       <section className="player-strip">
         <PlayerBoard players={players} />
       </section>
 
-      <main className="main-stage">
+      <main className={`main-stage phase-${phase}`}>
         <StagePanel
           phase={phase}
           round={round}
@@ -299,14 +312,14 @@ export default function App() {
           hasJoined={joined}
         />
 
-        <div className="chat-wrapper">
+        {canChat && <div className="chat-wrapper">
           <Chat
             messages={chatMessages}
             onSend={handleSendChat}
             disabled={!canChat || !joined}
             placeholder={canChat ? "메시지를 입력하세요" : "토론 시간이 아닙니다"}
           />
-        </div>
+        </div>}
       </main>
 
       {activeHint && <HintModal result={activeHint} onClose={handleHintClose} />}

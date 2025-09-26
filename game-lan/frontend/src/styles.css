@@ -636,3 +636,15 @@ input {
     flex: 1;
   }
 }
+
+.main-stage.phase-lobby,
+.main-stage.phase-ready {
+  grid-template-columns: 1fr;
+  justify-items: center;
+}
+
+.main-stage.phase-lobby .stage-panel,
+.main-stage.phase-ready .stage-panel {
+    width: 100%;
+    max-width: 800px;
+}
