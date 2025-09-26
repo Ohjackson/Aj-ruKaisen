@@ -6,3 +6,4 @@ websockets
 python-multipart
 pypdf
 regex
+httpx

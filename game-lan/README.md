@@ -1,15 +1,15 @@
 # 에저회전 (Azure Kaisen, アジュール回戦)
 
-에저회전은 해커톤·수업에서 “로컬 PDF 기반 AI 힌트 + 실시간 WebSocket 게임”을 빠르게 테스트하기 위한 LAN 전용 추리 게임입니다. 방장은 매 라운드 비밀 제시어를 입력하고, 플레이어들은 턴마다 단어를 제출해 PDF에서 추출한 간접 힌트를 받으며 점수를 겨룹니다. 정답은 게임 중·종료 후에도 절대 공개되지 않습니다.
+에저회전은 Azure OpenAI와 로컬 PDF를 결합해 **AI가 전 과정을 진행**하는 LAN 추리 게임입니다. 플레이어는 닉네임으로 입장해 READY를 누르고, 방장이 시작 버튼을 누르면 Azure AI가 제시어를 고르고 점수/힌트까지 판정합니다. 모든 힌트와 판정은 서버 내부에서만 처리되어 정답 텍스트는 절대 공개되지 않습니다.
 
 ---
 
 ## ✨ 핵심 특징
-- **3라운드 단일 룸**: 2~5명이 동시에 플레이하며 고정 3라운드를 진행합니다.
-- **PDF 기반 AI 힌트**: FastAPI 서버가 `backend/docs/5일차.pdf`를 인덱싱해 외부 LLM 없이 힌트를 생성합니다.
-- **턴제 & 타이머**: 서버 권위 30초 타이머(`TURN_TIMER_SECONDS` 환경변수 변경 가능)와 순차 턴 진행.
-- **정답 비공개 원칙**: 어떤 이벤트에도 제시어가 노출되지 않으며 힌트는 유니캐스트로 제공됩니다.
-- **종료 후 통계**: 플레이어 × 라운드 테이블(단어/점수)과 총점/순위, 승자 배지 렌더링.
+- **AI 주도 라운드**: READY → 방장 시작 → Azure AI가 PDF(`backend/docs/5일차.pdf`)에서 제시어 선택 → 밤(단어 제출) → AI 판정 → 낮(토론) → 황혼(전환) 3회 반복.
+- **Azure OpenAI + 로컬 PDF**: 강의 자료를 컨텍스트로 전달해 제시어·힌트를 뽑아내고, 실패 시 로컬 PDF 엔진이 자동으로 폴백합니다.
+- **다이내믹 UI**: 밤/낮/황혼 테마가 바뀌며 중앙에는 단계별 안내, 하단에는 토론 시간에만 열리는 채팅 패널이 표시됩니다.
+- **자동 점수/통계**: Azure가 내려준 JSON을 기준으로 점수·플래그·요약을 계산하고, 종료 후 Winner 배지와 라운드별 통계 모달을 제공합니다.
+- **LAN 친화 설계**: FastAPI WebSocket + React(Vite) 구조, 인증/외부 서비스 최소화. 동일 네트워크에서 여러 기기가 바로 접속 가능.
 
 ---
 
@@ -17,19 +17,20 @@
 ```
 /game-lan
   ├─ backend
-  │   ├─ app.py             # FastAPI + WebSocket 엔드포인트
-  │   ├─ state.py           # FSM, 인메모리 상태/점수 로직
+  │   ├─ app.py             # FastAPI WebSocket 서버 & Azure orchestration
+  │   ├─ state.py           # 플레이어/라운드 상태, READY/FSM 관리
   │   ├─ requirements.txt
   │   └─ ai/
-  │        ├─ pdf_engine.py # PDF 추출 및 힌트 생성
-  │        └─ rules.json    # 금칙어·스포일러 규칙
-  │   └─ docs/5일차.pdf     # 강의자료 (정적 서빙)
+  │        ├─ azure_agent.py # Azure OpenAI 호출 + PDF 폴백 로직
+  │        ├─ pdf_engine.py  # 로컬 PDF 힌트 생성기
+  │        └─ rules.json     # 금칙어·스포일러 규칙
+  │   └─ docs/5일차.pdf     # 강의자료 (정적 제공)
   ├─ frontend
   │   ├─ index.html
   │   ├─ package.json / vite.config.js
   │   └─ src/
   │        ├─ App.jsx, main.jsx, styles.css
-  │        ├─ components/   # UI 컴포넌트 (Lobby, HostPanel, TurnPanel 등)
+  │        ├─ components/   # PlayerBoard, StagePanel, HintModal, Chat 등
   │        └─ lib/ws.js     # 자동 재연결 WebSocket 헬퍼
   ├─ .env.example
   └─ README.md
@@ -37,16 +38,19 @@
 
 ---
 
-## 🔧 환경 요구사항
-- **Python 3.10+**
-- **Node.js 18+** (npm 포함)
-- LAN 접속을 위해 8000/5173 포트 방화벽 허용
+## 🔧 환경 요구사항 & 설정
+- **Python 3.10+**, **Node.js 18+ (npm)**
+- LAN에서 8000(FastAPI) / 5173(Vite) 포트를 허용하세요.
+- `.env.example`을 복사해 필요한 값을 채웁니다.
 
-`cp .env.example .env`로 기본 환경값을 복사해 사용할 수 있습니다.
+### 주요 환경 변수
+- `VITE_API_BASE`, `VITE_WS_PATH`(또는 `VITE_WS_URL`): 프론트 → 백엔드 라우팅 설정.
+- `AI_PDF_PATH`, `AI_RULES_PATH`: Azure와 폴백 엔진이 참조할 로컬 자원 경로.
+- `AI_HINTS_ENABLED`: `0`/`false`로 두면 Azure 판정 없이 폴백 엔진만 사용.
+- `MAX_ROUNDS`, `SUBMISSION_SECONDS`, `DISCUSSION_SECONDS`, `TRANSITION_SECONDS`: 라운드 수와 밤/낮/전환 타이머 설정.
+- `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_KEY`, `AZURE_OPENAI_DEPLOYMENT`, `AZURE_OPENAI_API_VERSION`: Azure OpenAI Chat Completions 엔드포인트 설정.
 
-- `VITE_API_BASE` : 프론트에서 REST·정적 리소스를 호출할 백엔드 Origin (기본 `http://<호스트>:8000`)
-- `VITE_WS_PATH` / `VITE_WS_URL` : WebSocket 경로 또는 전체 URL (기본 `/ws` → `ws://<호스트>:8000/ws`)
-- `TURN_TIMER_SECONDS` : 서버 턴 타이머 기본값(초)
+> Azure 설정이 비어 있으면 자동으로 PDF 폴백 로직이 동작합니다.
 
 ---
 
@@ -60,13 +64,13 @@ source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 uvicorn app:app --host 0.0.0.0 --port 8000
 ```
-- 서버 기동 시 로그에 `http://<LAN_IP>:8000` 과 예상 프론트 URL(`:5173`)이 출력됩니다.
+- 기동 시 로그로 `http://<LAN_IP>:8000` 과 프론트 예상 주소(`:5173`)가 출력됩니다.
 - 주요 엔드포인트
-  - `GET /health` → `{ "status": "ok" }`
-- `GET /config` → `{ rounds: 3, turnSeconds: 30 }`
-- `GET /docs/5일차.pdf` → 프론트에서 열람 가능한 강의자료
-- `GET /db` → 인메모리 게임 상태 스냅샷(제시어 본문은 미노출)
-- `WS /ws` → 게임용 JSON 이벤트 스트림
+  - `GET /health` → 헬스 체크
+  - `GET /config` → 라운드/타이머 설정 값
+  - `GET /docs/5일차.pdf` → 강의자료 다운로드
+  - `GET /db` → 인메모리 상태 스냅샷(제시어 본문은 미노출)
+  - `WS /ws` → 게임 이벤트 스트림
 
 ### 2) 프론트엔드 (React + Vite)
 ```bash
@@ -74,9 +78,8 @@ cd game-lan/frontend
 npm install
 npm run dev -- --host
 ```
-- 로컬 접속: `http://localhost:5173`
-- LAN 접속: `http://<서버 LAN IP>:5173` (백엔드 로그 참고)
-- 빌드 & 프리뷰
+- 접속 URL: `http://localhost:5173` 또는 `http://<LAN_IP>:5173`
+- 프로덕션 빌드/미리보기
   ```bash
   npm run build
   npm run preview -- --host
@@ -84,63 +87,49 @@ npm run dev -- --host
 
 ---
 
-## 🧠 게임 플레이 흐름
-1. **로비**: 닉네임으로 참가하면 첫 입장자가 자동 방장.
-2. **라운드 시작(총 3회)**
-   - 방장: 비밀 제시어 입력(서버 내 비공개 저장)
-   - 턴제: 플레이어가 자신의 차례에 단어 1개 제출 (중복·금칙어 필터)
-   - 서버 타이머(기본 30초) 또는 전원 제출 시 자동 종료
-3. **라운드 종료 처리**
-   - 각 플레이어에게 개인 힌트 유니캐스트 전송 (`round.result:me`)
-   - 공개 채팅에는 익명 라운드 요약(`round.summary`)만 브로드캐스트
-   - 점수 계산 후 스코어보드 갱신
-4. **3라운드 반복** 후 최종 승자 배지(`end.winner`)와 통계 모달(`stats.open`) 표시
+## 🧠 게임 흐름 (Azure 단계)
+1. **대기 & READY**: 플레이어가 닉네임으로 입장하고 READY 토글. 방장은 첫 입장자.
+2. **방장 시작**: 모든 플레이어가 READY면 방장이 “시작”을 눌러 게임 리셋 → Azure가 PDF 컨텍스트로 제시어 선택.
+3. **밤 (submission)**: 제한 시간(`SUBMISSION_SECONDS`) 동안 각 플레이어가 단어 1개 제출. 채팅은 비활성.
+4. **AI 판정 (resolution)**: Azure OpenAI가 제출 요약/점수/힌트를 JSON으로 반환. 실패 시 PDF 폴백.
+5. **밤 힌트 팝업**: 각 플레이어에게 개인 힌트 모달(`round.result:me`)이 표시됩니다.
+6. **낮 (discussion)**: 타이머(`DISCUSSION_SECONDS`) 동안 채팅이 열리고 요약(`round.summary`)과 토론 프롬프트가 노출됩니다.
+7. **황혼 (transition)**: 짧은 전환(`TRANSITION_SECONDS`) 후 다음 라운드로 이동. 라운드 3회 종료 시 Winner + 통계(`stats.open`).
 
-> **정답은 절대 공개되지 않습니다.** 힌트와 요약에도 제시어·동의어가 포함되지 않도록 PDF 엔진이 마스킹합니다.
+> 정답 문자열은 어떠한 이벤트/로그에도 노출되지 않으며, 힌트·요약·통계에 포함되지 않습니다.
 
 ---
 
-## 🧮 점수 규칙
-- **+1 기본점**: 유효 단어 제출 시
-- **+1 희소성**: 라운드 내 유일한 단어인 경우
-- **+1 비직접성**: AI 힌트 엔진이 `too_direct` 플래그를 주지 않은 경우
-- **페널티 (0 또는 −1)**: 금칙어(`forbidden`), 직접 스포일러(`too_direct`), 노이즈(`off_topic`) 등 `rules.json` 기반
-- AI의 `ai_score_suggestion`은 참고용이며 최종 점수는 서버가 확정합니다.
+## 🧮 점수 & 힌트 로직
+- Azure 응답 JSON의 `score`/`flags`/`hint`를 서버가 그대로 반영합니다.
+- Azure 호출 실패 시 폴백 PDF 엔진이 **기본점 + 희소성 + 비직접성** 규칙으로 점수를 계산하고 힌트를 생성합니다.
+- 모든 점수 변경 결과는 `room.state`와 `round.summary`를 통해 브로드캐스트됩니다.
 
 ---
 
 ## 🔄 WebSocket 이벤트 요약
 | 방향 | 타입 | 설명 |
 | --- | --- | --- |
-| 클라 → 서버 | `join`, `leave`, `host.set_secret`, `submit.word`, `chat.say`, `stats.request`, `ping` |
-| 서버 → 클라 | `joined`, `room.state`, `turn.next`, `tick`, `round.started`, `round.result:me`, `round.summary`, `phase.changed`, `round.ready`, `end.winner`, `stats.open`, `chat.message`, `error`, `pong` |
-
-- **개별 힌트** (`round.result:me`)는 항상 해당 플레이어에게만 전송.
-- **라운드 요약**에는 플레이어 이름 대신 슬롯/단어/점수만 제공.
+| 클라 → 서버 | `join`, `leave`, `player.ready_toggle`, `host.start_game`, `submit.word`, `chat.say`, `stats.request`, `ping` |
+| 서버 → 클라 | `joined`, `room.state`, `phase.changed`, `round.prep`, `tick`, `round.result:me`, `round.summary`, `end.winner`, `stats.open`, `chat.message`, `player.ready`, `error`, `pong` |
 
 ---
 
 ## ✅ QA 체크리스트
-1. 3명 이상 접속 → 라운드 1 진행 → 각자 서로 다른 힌트 수신, 공개 채팅은 익명 요약만 출력
-2. 금칙어/스포일러 제출 시 해당 플레이어 점수 페널티 및 힌트 톤 완화
-3. 3라운드 종료 후 Winner 배지와 통계 모달에서 라운드별 단어/점수/총점/순위 확인 (정답 미노출)
-4. 새로고침 후 로컬 스토리지에 저장된 `playerId`/닉네임으로 세션 복구
-5. 동일 LAN 다른 기기에서 접속하여 실시간 동기화 확인
-
----
-
-## 📌 개발 메모
-- `TURN_TIMER_SECONDS` 환경변수로 기본 턴 시간을 조정할 수 있습니다.
-- `backend/ai/rules.json`에 금칙어·스포일러 목록을 추가하면 힌트 및 채팅 마스킹에 즉시 반영됩니다.
-- `pdf_engine.py`의 `refresh()` 메서드를 이용하면 서버 재시작 없이 PDF/룰 갱신을 적용할 수 있습니다.
+1. 전원이 READY 후 방장이 시작 → Azure가 제시어를 고르고 밤 단계로 진입.
+2. 밤에 각자 단어 제출 → 힌트 모달이 개인별로 표시, 채팅은 비활성.
+3. 낮 타이머 동안 채팅이 열리고 요약/프롬프트 확인 가능.
+4. Azure 오류 시에도 폴백 엔진이 점수/힌트를 제공해 라운드가 정상 진행.
+5. 3라운드 종료 후 Winner 배지 + 통계 모달에 단어/점수/힌트가 정확히 기재 (정답 비공개 유지).
+6. 새 게임을 위해 READY를 다시 눌러도 상태가 정상적으로 초기화.
 
 ---
 
 ## 🖼️ 스크린샷
-> 실행 후 캡처 이미지를 이 섹션에 추가하세요.
+> 실제 실행 화면을 추가해 주세요 (밤/낮 테마, 힌트 모달, Winner 등).
 
 ---
 
-### 라이선스 안내
-- `backend/docs/5일차.pdf`는 교육용 예시 자료로 포함되어 있으며, 원 저작권자의 정책을 준수해야 합니다.
-- 기타 소스 코드는 별도 명시가 없는 한 프로젝트 참가자가 자유롭게 수정·확장할 수 있습니다.
+### 라이선스 & 주의
+- `backend/docs/5일차.pdf`는 교육용 예제로 포함되어 있으며 원저작권자의 정책을 따릅니다.
+- Azure OpenAI 호출 시 사용량/비용을 확인하세요. 키가 없으면 폴백 엔진으로 자동 전환됩니다.

@@ -1,12 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Lobby from "./components/Lobby.jsx";
-import HostPanel from "./components/HostPanel.jsx";
-import TurnPanel from "./components/TurnPanel.jsx";
 import Chat from "./components/Chat.jsx";
-import Scoreboard from "./components/Scoreboard.jsx";
-import Timer from "./components/Timer.jsx";
-import WinnerBanner from "./components/WinnerBanner.jsx";
+import PlayerBoard from "./components/PlayerBoard.jsx";
+import StagePanel from "./components/StagePanel.jsx";
 import StatsModal from "./components/StatsModal.jsx";
+import WinnerBanner from "./components/WinnerBanner.jsx";
+import HintModal from "./components/HintModal.jsx";
 import WSClient from "./lib/ws.js";
 
 const STORAGE_ID = "akPlayerId";
@@ -14,6 +12,25 @@ const STORAGE_NAME = "akPlayerName";
 
 const initialPlayerId = () => localStorage.getItem(STORAGE_ID) || "";
 const initialPlayerName = () => localStorage.getItem(STORAGE_NAME) || "";
+
+const phaseThemeMap = {
+  lobby: "dawn",
+  ready: "dawn",
+  submission: "night",
+  resolution: "void",
+  discussion: "day",
+  transition: "dusk",
+  end: "starfall",
+};
+
+const themeTitle = {
+  dawn: "Azure Dawn",
+  night: "Azure Nightfall",
+  day: "Azure Daybreak",
+  dusk: "Azure Dusk",
+  void: "Azure Sync",
+  starfall: "Azure Epilogue",
+};
 
 const computeApiBase = () => {
   const override = import.meta.env.VITE_API_BASE;
@@ -38,107 +55,116 @@ export default function App() {
   const [playerId, setPlayerId] = useState(initialPlayerId);
   const [playerName, setPlayerName] = useState(initialPlayerName);
   const [isHost, setIsHost] = useState(false);
-  const [roomState, setRoomState] = useState(null);
   const [phase, setPhase] = useState("lobby");
-  const [currentTurn, setCurrentTurn] = useState(null);
-  const [timerMs, setTimerMs] = useState(30000);
+  const [round, setRound] = useState(0);
+  const [timerMs, setTimerMs] = useState(0);
+  const [players, setPlayers] = useState([]);
+  const [roomState, setRoomState] = useState(null);
   const [chatMessages, setChatMessages] = useState([]);
-  const [personalResults, setPersonalResults] = useState({});
+  const [prepInfo, setPrepInfo] = useState(null);
+  const [discussionPrompt, setDiscussionPrompt] = useState("");
   const [roundSummaries, setRoundSummaries] = useState({});
-  const [winner, setWinner] = useState(null);
   const [stats, setStats] = useState(null);
   const [statsVisible, setStatsVisible] = useState(false);
-  const [pendingSecretRound, setPendingSecretRound] = useState(null);
+  const [winner, setWinner] = useState(null);
+  const [hintQueue, setHintQueue] = useState([]);
+  const [activeHint, setActiveHint] = useState(null);
   const [lastError, setLastError] = useState("");
-  const currentRoundRef = useRef(0);
   const apiBase = useMemo(() => computeApiBase(), []);
   const wsUrl = useMemo(() => computeWsUrl(apiBase), [apiBase]);
+  const latestRoundRef = useRef(0);
 
-  const handleMessage = useCallback(
-    (event) => {
-      const { type, payload } = event;
-      switch (type) {
-        case "joined": {
-          setPlayerId(payload.playerId);
-          setPlayerName(payload.name);
-          setIsHost(payload.isHost);
-          localStorage.setItem(STORAGE_ID, payload.playerId);
-          localStorage.setItem(STORAGE_NAME, payload.name);
-          setLastError("");
-          break;
-        }
-        case "room.state": {
-          setRoomState(payload);
-          setPhase(payload.phase);
-          setTimerMs(payload.timerMs ?? 0);
-          currentRoundRef.current = payload.round || 0;
-          if (payload.turn) {
-            setCurrentTurn(payload.turn);
-          }
-          break;
-        }
-        case "turn.next": {
-          setCurrentTurn(payload.playerId);
-          break;
-        }
-        case "tick": {
-          if (!payload.round || payload.round === currentRoundRef.current) {
-            setTimerMs(payload.timerMs);
-          }
-          break;
-        }
-        case "round.result:me": {
-          setPersonalResults((prev) => ({ ...prev, [payload.round]: payload }));
-          break;
-        }
-        case "round.summary": {
-          setRoundSummaries((prev) => ({ ...prev, [payload.round]: payload.entries }));
-          break;
-        }
-        case "phase.changed": {
-          setPhase(payload.phase);
-          if (payload.phase === "collecting") {
-            setWinner(null);
-            currentRoundRef.current = payload.round;
-          }
-          break;
-        }
-        case "round.started": {
-          setPendingSecretRound(null);
-          break;
-        }
-        case "round.ready": {
-          setPendingSecretRound(payload.round);
-          break;
-        }
-        case "end.winner": {
-          setWinner(payload);
-          setStatsVisible(true);
-          break;
-        }
-        case "stats.open": {
-          setStats(payload);
-          break;
-        }
-        case "chat.message": {
-          setChatMessages((prev) => [...prev.slice(-49), payload]);
-          break;
-        }
-        case "error": {
-          setLastError(payload.message || "문제가 발생했습니다.");
-          break;
-        }
-        case "host.secret.accepted": {
-          setPendingSecretRound(payload.round);
-          break;
-        }
-        case "pong":
-        default:
-          break;
+  const enqueueHint = useCallback((payload) => {
+    setHintQueue((prev) => [...prev, payload]);
+  }, []);
+
+  useEffect(() => {
+    if (!activeHint && hintQueue.length) {
+      setActiveHint(hintQueue[0]);
+      setHintQueue((prev) => prev.slice(1));
+    }
+  }, [hintQueue, activeHint]);
+
+  const handleMessage = useCallback((event) => {
+    const { type, payload } = event;
+    switch (type) {
+      case "joined": {
+        setPlayerId(payload.playerId);
+        setPlayerName(payload.name);
+        setIsHost(payload.isHost);
+        localStorage.setItem(STORAGE_ID, payload.playerId);
+        localStorage.setItem(STORAGE_NAME, payload.name);
+        setLastError("");
+        break;
       }
-    },
-    []
-  );
+      case "room.state": {
+        setRoomState(payload);
+        setPhase(payload.phase);
+        setRound(payload.round);
+        setTimerMs(payload.timerMs || 0);
+        setPlayers(payload.players || []);
+        latestRoundRef.current = payload.round;
+        break;
+      }
+      case "tick": {
+        if (!payload.round || payload.round === latestRoundRef.current) {
+          setTimerMs(payload.timerMs || 0);
+        }
+        break;
+      }
+      case "phase.changed": {
+        setPhase(payload.phase);
+        if (payload.round) {
+          setRound(payload.round);
+          latestRoundRef.current = payload.round;
+        }
+        if (payload.phase === "discussion") {
+          setDiscussionPrompt(payload.prompt || "서로 힌트를 교환하며 비밀을 추적하세요.");
+        }
+        if (payload.phase === "submission") {
+          setDiscussionPrompt("");
+          setWinner(null);
+          setStatsVisible(false);
+        }
+        break;
+      }
+      case "round.prep": {
+        setPrepInfo(payload);
+        break;
+      }
+      case "round.summary": {
+        setRoundSummaries((prev) => ({ ...prev, [payload.round]: payload.entries || [] }));
+        break;
+      }
+      case "round.result:me": {
+        enqueueHint(payload);
+        break;
+      }
+      case "chat.message": {
+        setChatMessages((prev) => [...prev.slice(-99), payload]);
+        break;
+      }
+      case "stats.open": {
+        setStats(payload);
+        break;
+      }
+      case "end.winner": {
+        setWinner(payload);
+        setStatsVisible(true);
+        break;
+      }
+      case "player.ready": {
+        setPlayers((prev) => prev.map((p) => (p.id === payload.playerId ? { ...p, ready: payload.ready } : p)));
+        break;
+      }
+      case "error": {
+        setLastError(payload.message || "문제가 발생했습니다.");
+        break;
+      }
+      default:
+        break;
+    }
+  }, [enqueueHint]);
 
   useEffect(() => {
     const client = new WSClient(wsUrl, {
@@ -152,7 +178,7 @@ export default function App() {
     return () => {
       client.close();
     };
-  }, [handleMessage, wsUrl]);
+  }, [wsUrl, handleMessage]);
 
   const sendMessage = useCallback(
     (type, payload = {}) => {
@@ -172,17 +198,16 @@ export default function App() {
     [sendMessage, playerId]
   );
 
-  const handleSetSecret = useCallback(
-    (secret) => {
-      if (!secret) return;
-      sendMessage("host.set_secret", { secret });
-    },
-    [sendMessage]
-  );
+  const handleReadyToggle = useCallback(() => {
+    sendMessage("player.ready_toggle");
+  }, [sendMessage]);
+
+  const handleStartGame = useCallback(() => {
+    sendMessage("host.start_game");
+  }, [sendMessage]);
 
   const handleSubmitWord = useCallback(
     (word) => {
-      if (!word) return;
       sendMessage("submit.word", { word });
     },
     [sendMessage]
@@ -190,7 +215,6 @@ export default function App() {
 
   const handleSendChat = useCallback(
     (message) => {
-      if (!message) return;
       sendMessage("chat.say", { message });
     },
     [sendMessage]
@@ -201,134 +225,105 @@ export default function App() {
     setStatsVisible(true);
   }, [sendMessage]);
 
-  const myResult = useMemo(() => {
-    const rounds = Object.keys(personalResults).map(Number);
-    if (!rounds.length) return null;
-    const latest = Math.max(...rounds);
-    return personalResults[latest];
-  }, [personalResults]);
+  const handleHintClose = useCallback(() => {
+    setActiveHint(null);
+  }, []);
 
-  const summaryEntries = useMemo(() => {
-    if (!roomState) return [];
-    const entries = roundSummaries[roomState.round];
-    return entries || [];
-  }, [roundSummaries, roomState]);
+  const allReady = useMemo(() => {
+    if (!players.length) return false;
+    return players.filter((p) => p.connected).every((player) => player.ready);
+  }, [players]);
 
-  const you = useMemo(() => {
-    if (!roomState) return null;
-    return roomState.players?.find((p) => p.id === playerId) || null;
-  }, [roomState, playerId]);
-
-  const isMyTurn = useMemo(() => currentTurn === playerId, [currentTurn, playerId]);
-  const canSubmit = phase === "collecting" && isMyTurn;
-  const canSetSecret = isHost && ["lobby", "next"].includes(phase);
+  const currentSummary = roundSummaries[round] || [];
+  const phaseTheme = phaseThemeMap[phase] || "dawn";
+  const themeLabel = themeTitle[phaseTheme] || "Azure";
+  const canSubmit = phase === "submission";
+  const canChat = ["discussion", "lobby", "ready"].includes(phase);
+  const canToggleReady = ["lobby", "ready", "end"].includes(phase) && playerId;
+  const showStartButton = phase === "ready" && isHost;
+  const joined = Boolean(playerId);
 
   return (
-    <div className="app-shell">
-      <header className="app-header">
-        <div>
+    <div className={`app-shell theme-${phaseTheme}`}>
+      <header className="top-bar">
+        <div className="brand-block">
           <h1>에저회전</h1>
-          <p className="tagline">Azure Kaisen · アジュール回戦</p>
+          <p className="tagline">{themeLabel}</p>
         </div>
-        <div className="header-meta">
-          <Timer phase={phase} round={roomState?.round || 0} timerMs={timerMs} connectionStatus={connectionStatus} />
-          <div className="turn-indicator">
-            {phase === "collecting" && currentTurn ? (
-              <span className={isMyTurn ? "badge badge-active" : "badge"}>
-                현재 턴: {roomState?.players?.find((p) => p.id === currentTurn)?.name || "?"}
-              </span>
-            ) : (
-              <span className="badge">대기 중</span>
-            )}
-          </div>
-          <a className="pdf-link" href={`${apiBase}/docs/5일차.pdf`} target="_blank" rel="noreferrer">
-            강의자료 보기
-          </a>
+        <div className="status-block">
+          <span className={`connection ${connectionStatus}`}>{connectionStatus}</span>
+          {lastError && <span className="error-pill">{lastError}</span>}
+        </div>
+        <div className="control-block">
+          {!joined ? (
+            <form
+              className="join-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const formData = new FormData(event.currentTarget);
+                const value = (formData.get("nickname") || "").toString().trim();
+                if (!value) return;
+                handleJoin(value);
+                event.currentTarget.reset();
+              }}
+            >
+              <input name="nickname" placeholder="닉네임" defaultValue={playerName} />
+              <button type="submit" disabled={connectionStatus !== "connected"}>
+                입장
+              </button>
+            </form>
+          ) : (
+            <div className="control-buttons">
+              <button onClick={handleReadyToggle} disabled={!canToggleReady} className={roomState?.players?.find((p) => p.id === playerId)?.ready ? "primary" : ""}>
+                READY
+              </button>
+              {showStartButton ? (
+                <button className="primary" onClick={handleStartGame} disabled={!allReady}>
+                  시작
+                </button>
+              ) : null}
+              <button onClick={handleRequestStats}>
+                통계
+              </button>
+              <a className="pdf-link" href={`${apiBase}/docs/5일차.pdf`} target="_blank" rel="noreferrer">
+                강의자료
+              </a>
+            </div>
+          )}
         </div>
       </header>
 
-      <main className="app-main">
-        <section className="panel chat-panel">
+      <section className="player-strip">
+        <PlayerBoard players={players} />
+      </section>
+
+      <main className="main-stage">
+        <StagePanel
+          phase={phase}
+          round={round}
+          timerMs={timerMs}
+          canSubmit={canSubmit}
+          onSubmit={handleSubmitWord}
+          summary={currentSummary}
+          discussionPrompt={discussionPrompt}
+          prepInfo={prepInfo}
+          isHost={isHost}
+          hasJoined={joined}
+        />
+
+        <div className="chat-wrapper">
           <Chat
             messages={chatMessages}
             onSend={handleSendChat}
-            disabled={connectionStatus !== "connected" || !playerId}
+            disabled={!canChat || !joined}
+            placeholder={canChat ? "메시지를 입력하세요" : "토론 시간이 아닙니다"}
           />
-        </section>
-
-        <section className="panel game-panel">
-          {!playerId && (
-            <Lobby
-              onJoin={handleJoin}
-              initialName={playerName}
-              connectionStatus={connectionStatus}
-              lastError={lastError}
-            />
-          )}
-
-          {playerId && canSetSecret && (
-            <HostPanel onSubmit={handleSetSecret} pendingRound={pendingSecretRound} />
-          )}
-
-          {playerId && (
-            <TurnPanel
-              canSubmit={canSubmit}
-              isMyTurn={isMyTurn}
-              phase={phase}
-              onSubmit={handleSubmitWord}
-              lastError={lastError}
-            />
-          )}
-
-          {playerId && (
-            <section className="hint-card" aria-live="polite">
-              <h2>개인 힌트</h2>
-              {myResult ? (
-                <div>
-                  <p className="hint-text">{myResult.hint}</p>
-                  <div className="hint-meta">
-                    <span>라운드 {myResult.round}</span>
-                    <span>점수 {myResult.score}</span>
-                    {myResult.flags?.length ? <span>플래그: {myResult.flags.join(", ")}</span> : null}
-                  </div>
-                </div>
-              ) : (
-                <p className="hint-text muted">라운드 종료 후 힌트가 제공됩니다.</p>
-              )}
-            </section>
-          )}
-
-          {summaryEntries.length > 0 && (
-            <section className="summary-card">
-              <h2>라운드 요약</h2>
-              <ul>
-                {summaryEntries.map((entry) => (
-                  <li key={entry.slot}>
-                    <span className="summary-word">{entry.word}</span>
-                    <span className="summary-score">{entry.score}점</span>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
-
-          {playerId && (
-            <button className="stats-button" onClick={handleRequestStats} disabled={phase === "lobby"}>
-              통계 보기
-            </button>
-          )}
-        </section>
-
-        <aside className="panel score-panel">
-          <Scoreboard roomState={roomState} youId={playerId} />
-        </aside>
+        </div>
       </main>
 
+      {activeHint && <HintModal result={activeHint} onClose={handleHintClose} />}
       {winner && <WinnerBanner winner={winner} />}
-
-      {statsVisible && stats && (
-        <StatsModal stats={stats} onClose={() => setStatsVisible(false)} />
-      )}
+      {statsVisible && stats && <StatsModal stats={stats} onClose={() => setStatsVisible(false)} />}
     </div>
   );
 }

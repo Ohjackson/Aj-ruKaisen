@@ -31,6 +31,7 @@ export default function StatsModal({ stats, onClose }) {
                     <td key={idx}>
                       <div className="stat-word">{round.word || "-"}</div>
                       <div className="stat-score">{round.score}점</div>
+                      {round.hint ? <div className="stat-hint">{round.hint}</div> : null}
                     </td>
                   ))}
                   <td>{player.total}</td>

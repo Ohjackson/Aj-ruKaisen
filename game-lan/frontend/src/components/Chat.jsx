@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 
-export default function Chat({ messages, onSend, disabled }) {
+export default function Chat({ messages, onSend, disabled, placeholder }) {
   const [draft, setDraft] = useState("");
-  const bottomRef = useRef(null);
+  const logRef = useRef(null);
 
   useEffect(() => {
-    if (bottomRef.current) {
-      bottomRef.current.scrollIntoView({ behavior: "smooth" });
+    if (logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight;
     }
   }, [messages]);
 
@@ -19,31 +19,29 @@ export default function Chat({ messages, onSend, disabled }) {
   };
 
   return (
-    <div className="chat">
-      <h2>공개 채팅</h2>
-      <div className="chat-log">
+    <section className={`chat-panel ${disabled ? "disabled" : ""}`}>
+      <header>
+        <h2>채팅</h2>
+      </header>
+      <div className="chat-log" ref={logRef}>
         {messages.map((msg) => (
-          <p key={msg.ts + msg.playerId}>
-            <span className="chat-name">[{msg.name}]</span> {msg.message}
+          <p key={`${msg.ts}-${msg.playerId}`}>
+            <span className="chat-name">[{msg.name || msg.playerId}]</span> {msg.message}
           </p>
         ))}
-        <div ref={bottomRef} />
+        {!messages.length && <p className="chat-empty">메시지가 없습니다.</p>}
       </div>
       <form className="chat-form" onSubmit={handleSubmit}>
-        <label htmlFor="chat-input" className="sr-only">
-          채팅 입력
-        </label>
         <input
-          id="chat-input"
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
-          placeholder="메시지 입력"
+          placeholder={placeholder}
           disabled={disabled}
         />
         <button type="submit" disabled={disabled || !draft.trim()}>
           전송
         </button>
       </form>
-    </div>
+    </section>
   );
 }

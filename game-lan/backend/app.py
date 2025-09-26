@@ -15,10 +15,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
 try:
-    from .ai.pdf_engine import PdfHintEngine  # type: ignore
-    from .state import GameState  # type: ignore
-except ImportError:  # pragma: no cover - fallback when run as script
-    from ai.pdf_engine import PdfHintEngine
+    from .ai.azure_agent import AzureAgent, PlayerResult
+    from .state import GameState
+except ImportError:  # pragma: no cover
+    from ai.azure_agent import AzureAgent, PlayerResult
     from state import GameState
 
 
@@ -27,10 +27,27 @@ logger = logging.getLogger("azure-kaisen")
 
 BASE_DIR = Path(__file__).resolve().parent
 DOCS_DIR = BASE_DIR / "docs"
-PDF_PATH = DOCS_DIR / "5일차.pdf"
-RULES_PATH = BASE_DIR / "ai" / "rules.json"
 
-app = FastAPI(title="에저회전 Azure Kaisen", version="0.1.0")
+
+def _resolve_path(default: Path, override: Optional[str]) -> Path:
+    if not override:
+        return default
+    candidate = Path(override)
+    if not candidate.is_absolute():
+        candidate = (BASE_DIR / candidate).resolve()
+    return candidate
+
+
+PDF_PATH = _resolve_path(DOCS_DIR / "5일차.pdf", os.getenv("AI_PDF_PATH"))
+RULES_PATH = _resolve_path(BASE_DIR / "ai" / "rules.json", os.getenv("AI_RULES_PATH"))
+HINTS_ENABLED = os.getenv("AI_HINTS_ENABLED", "1").lower() not in {"0", "false", "off"}
+
+MAX_ROUNDS = int(os.getenv("MAX_ROUNDS", "3"))
+SUBMISSION_SECONDS = int(os.getenv("SUBMISSION_SECONDS", "45"))
+DISCUSSION_SECONDS = int(os.getenv("DISCUSSION_SECONDS", "45"))
+TRANSITION_SECONDS = int(os.getenv("TRANSITION_SECONDS", "12"))
+
+app = FastAPI(title="에저회전 Azure Kaisen", version="0.2.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -39,9 +56,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-TURN_TIMER_SECONDS = int(os.getenv("TURN_TIMER_SECONDS", "30"))
-state = GameState(max_rounds=3, turn_timer_seconds=TURN_TIMER_SECONDS)
-hint_engine = PdfHintEngine(pdf_path=PDF_PATH, rules_path=RULES_PATH)
+state = GameState(
+    max_rounds=MAX_ROUNDS,
+    submission_seconds=SUBMISSION_SECONDS,
+    discussion_seconds=DISCUSSION_SECONDS,
+    transition_seconds=TRANSITION_SECONDS,
+)
+ai_agent = AzureAgent(pdf_path=PDF_PATH, rules_path=RULES_PATH, hints_enabled=HINTS_ENABLED)
 
 
 class ConnectionManager:
@@ -76,7 +97,7 @@ class ConnectionManager:
 
     async def broadcast(self, message: Dict[str, Any]) -> None:
         data = json.dumps(message)
-        to_remove = []
+        to_remove: list[str] = []
         for pid, websocket in self.connections.items():
             try:
                 await websocket.send_text(data)
@@ -84,11 +105,6 @@ class ConnectionManager:
                 to_remove.append(pid)
         for pid in to_remove:
             self.connections.pop(pid, None)
-
-    async def close(self, player_id: str) -> None:
-        websocket = self.connections.get(player_id)
-        if websocket:
-            await websocket.close()
 
 
 manager = ConnectionManager()
@@ -100,7 +116,7 @@ def lan_address() -> str:
         sock.connect(("8.8.8.8", 80))
         ip = sock.getsockname()[0]
         sock.close()
-    except Exception:  # pragma: no cover - fallback path
+    except Exception:  # pragma: no cover
         ip = socket.gethostbyname(socket.gethostname())
     return ip
 
@@ -108,7 +124,7 @@ def lan_address() -> str:
 @app.on_event("startup")
 async def on_startup() -> None:
     ip = lan_address()
-    logger.info("Backend ready on http://%s:8000 (WS /ws)", ip)
+    logger.info("Backend ready on http://%s:8000", ip)
     logger.info("Frontend dev server expected on http://%s:5173", ip)
 
 
@@ -118,8 +134,15 @@ async def health() -> JSONResponse:
 
 
 @app.get("/config")
-async def config() -> JSONResponse:
-    return JSONResponse({"rounds": state.max_rounds, "turnSeconds": state.turn_timer_seconds})
+async def get_config() -> JSONResponse:
+    return JSONResponse(
+        {
+            "rounds": MAX_ROUNDS,
+            "submissionSeconds": SUBMISSION_SECONDS,
+            "discussionSeconds": DISCUSSION_SECONDS,
+            "transitionSeconds": TRANSITION_SECONDS,
+        }
+    )
 
 
 @app.get("/docs/5일차.pdf")
@@ -133,220 +156,192 @@ async def dump_state() -> JSONResponse:
     return JSONResponse(snapshot)
 
 
-async def send_room_state() -> None:
-    public_state = await state.to_public_state()
-    await manager.broadcast({"type": "room.state", "payload": public_state})
-
-
-async def send_turn_event() -> None:
-    player = await state.current_turn_player()
-    if player:
-        await manager.broadcast({"type": "turn.next", "payload": {"playerId": player.id, "name": player.name}})
-
-
-async def run_timer(current_round: int) -> None:
-    logger.info("Timer task started for round %s", current_round)
-    while True:
-        remaining = await state.update_remaining_ms()
-        await manager.broadcast({"type": "tick", "payload": {"round": current_round, "timerMs": remaining}})
-        if remaining <= 0:
-            logger.info("Timer expired for round %s", current_round)
-            await force_resolve()
-            break
-        await asyncio.sleep(1)
-
-
-async def start_round_flow() -> None:
-    started = await state.start_round_if_possible()
-    if not started:
-        return
-    await send_room_state()
-    await send_turn_event()
-    await manager.broadcast({"type": "round.started", "payload": {"round": state.round}})
-    if state.timer_task and not state.timer_task.done():
-        state.timer_task.cancel()
-    state.timer_task = asyncio.create_task(run_timer(state.round))
-
-
-async def ensure_timer_cancelled() -> None:
+# ---------------------------------------------------------------------------
+# Timer helpers
+# ---------------------------------------------------------------------------
+async def cancel_timer() -> None:
     if state.timer_task and not state.timer_task.done():
         state.timer_task.cancel()
         try:
             await state.timer_task
         except asyncio.CancelledError:
             pass
-        finally:
-            state.timer_task = None
+    state.timer_task = None
 
 
-async def force_resolve() -> None:
-    await ensure_timer_cancelled()
-    await state.ensure_all_submissions()
-    await state.finish_round()
-    await send_room_state()
-    await resolve_round()
+async def run_timer(phase: str, round_index: int, on_expire) -> None:
+    expired = False
+    try:
+        while True:
+            remaining = await state.update_remaining_ms()
+            await manager.broadcast({"type": "tick", "payload": {"phase": phase, "round": round_index, "timerMs": remaining}})
+            if remaining <= 0:
+                expired = True
+                break
+            await asyncio.sleep(1)
+    except asyncio.CancelledError:
+        return
+    finally:
+        state.timer_task = None
+    if expired:
+        await on_expire()
 
 
-async def resolve_round() -> None:
-    round_index = state.round
+async def start_stage(phase: str, *, duration: int, round_index: int, on_expire) -> None:
+    await cancel_timer()
+    await state.set_phase(phase, duration)
+    await broadcast_state()
+    await manager.broadcast({"type": "phase.changed", "payload": {"phase": phase, "round": round_index}})
+    state.timer_task = asyncio.create_task(run_timer(phase, round_index, on_expire))
+
+
+async def broadcast_state() -> None:
+    public_state = await state.get_public_state()
+    await manager.broadcast({"type": "room.state", "payload": public_state})
+
+
+# ---------------------------------------------------------------------------
+# Game flow helpers
+# ---------------------------------------------------------------------------
+async def start_submission_phase(round_index: int) -> None:
+    async def on_expire():
+        await finalize_round(round_index, reason="timer")
+
+    await start_stage("submission", duration=SUBMISSION_SECONDS, round_index=round_index, on_expire=on_expire)
+
+
+async def start_discussion_phase(round_index: int, discussion_prompt: str) -> None:
+    async def on_expire():
+        await start_transition_phase(round_index)
+
+    await cancel_timer()
+    await state.set_phase("discussion", DISCUSSION_SECONDS)
+    await broadcast_state()
+    await manager.broadcast({"type": "phase.changed", "payload": {"phase": "discussion", "round": round_index, "prompt": discussion_prompt}})
+    state.timer_task = asyncio.create_task(run_timer("discussion", round_index, on_expire))
+
+
+async def start_transition_phase(round_index: int) -> None:
+    async def on_expire():
+        await maybe_start_next_round()
+
+    await start_stage("transition", duration=TRANSITION_SECONDS, round_index=round_index, on_expire=on_expire)
+
+
+async def maybe_start_next_round() -> None:
+    await cancel_timer()
+    if state.round >= state.max_rounds:
+        await conclude_game()
+        return
+    await begin_round()
+
+
+async def conclude_game() -> None:
+    await cancel_timer()
+    await state.set_phase("end")
+    await broadcast_state()
+    winner = await state.winner()
+    if winner:
+        await manager.broadcast({"type": "end.winner", "payload": winner})
+    stats = await state.build_stats()
+    await manager.broadcast({"type": "stats.open", "payload": stats})
+    await state.reset_ready()
+    await state.set_phase("ready")
+    await broadcast_state()
+
+
+async def begin_round() -> None:
+    used = await state.used_secrets()
+    choice = await ai_agent.choose_secret(round_index=state.round + 1, used_secrets=used)
+    round_index = await state.start_new_round(choice.secret)
+    await manager.broadcast({"type": "round.prep", "payload": {"round": round_index, "theme": choice.theme, "source": choice.source, "rationale": choice.rationale}})
+    await start_submission_phase(round_index)
+
+
+async def finalize_round(round_index: int, *, reason: str) -> None:
+    current_state = await state.get_public_state()
+    if current_state["round"] != round_index or current_state["phase"] != "submission":
+        return
+
+    await cancel_timer()
+    await state.set_phase("resolution")
+    await state.ensure_missed_submissions()
+    await broadcast_state()
+    await manager.broadcast({"type": "phase.changed", "payload": {"phase": "resolution", "round": round_index, "reason": reason}})
+
     secret = await state.get_secret(round_index) or ""
     submissions = await state.get_round_submissions(round_index)
-    previous_summaries = []
-    for idx in range(1, round_index):
-        round_entries = await state.get_round_submissions(idx)
-        summary = ", ".join(filter(None, (sub.word for sub in round_entries.values())))
-        if summary:
-            previous_summaries.append(summary)
+    players = await state.list_players()
 
-    for submission in submissions.values():
-        result = hint_engine.generate_hint(
-            secret=secret,
-            submitted_word=submission.word,
-            previous_round_summaries=previous_summaries,
+    submission_payload = {
+        pid: {"word": sub.word, "flags": sub.flags}
+        for pid, sub in submissions.items()
+    }
+    player_payload = [
+        {"id": player.id, "name": player.name, "connected": player.connected}
+        for player in players
+    ]
+
+    evaluation = await ai_agent.evaluate_round(
+        round_index=round_index,
+        secret=secret,
+        submissions=submission_payload,
+        player_order=player_payload,
+    )
+
+    for player in players:
+        result = evaluation.players.get(player.id)
+        if not result:
+            result = PlayerResult(hint="AI 응답을 받지 못했습니다.", score=0, flags=["ai_missing"], meta={"source": evaluation.source})
+        await state.store_hint_result(
+            round_index,
+            player.id,
+            hint=result.hint,
+            score=result.score,
+            flags=result.flags,
+            meta=result.meta,
         )
-        submission.hint = result.hint
-        submission.ai_score_suggestion = result.ai_score_suggestion
-        for flag in result.flags:
-            if flag not in submission.flags:
-                submission.flags.append(flag)
-
-    scored = await state.calculate_scores()
-
-    # Send personal results
-    for player_id, submission in scored.items():
         await manager.send_to(
-            player_id,
+            player.id,
             {
                 "type": "round.result:me",
                 "payload": {
                     "round": round_index,
-                    "word": submission.word,
-                    "hint": submission.hint,
-                    "score": submission.total_score,
-                    "flags": submission.flags,
-                    "aiScoreSuggestion": submission.ai_score_suggestion,
+                    "hint": result.hint,
+                    "score": result.score,
+                    "flags": result.flags,
+                    "meta": result.meta,
                 },
             },
         )
 
-    # Public summary with anonymised entries
-    player_order = await state.get_player_order()
-    summary_entries = []
-    for idx, player_id in enumerate(player_order):
-        submission = scored.get(player_id)
-        if not submission:
-            continue
-        summary_entries.append(
-            {
-                "slot": idx + 1,
-                "word": submission.word if submission.word else "(미제출)",
-                "score": submission.total_score,
-                "flags": submission.flags,
-            }
-        )
-    summary_payload = {"round": round_index, "entries": summary_entries}
+    decorated_summary = []
+    for entry in evaluation.summary:
+        entry_copy = dict(entry)
+        pid = entry_copy.get("playerId")
+        if pid:
+            match = next((p for p in players if p.id == pid), None)
+            if match and not entry_copy.get("name"):
+                entry_copy["name"] = match.name
+        decorated_summary.append(entry_copy)
+
+    summary_payload = {
+        "round": round_index,
+        "source": evaluation.source,
+        "entries": decorated_summary,
+    }
     await manager.broadcast({"type": "round.summary", "payload": summary_payload})
-    await send_room_state()
+    await broadcast_state()
 
-    await state.prepare_next_round()
-    phase_state = await state.to_public_state()
-    await manager.broadcast({"type": "phase.changed", "payload": {"phase": phase_state["phase"], "round": phase_state["round"]}})
-
-    if phase_state["phase"] == "end":
-        winner = await state.winner()
-        if winner:
-            await manager.broadcast({"type": "end.winner", "payload": winner})
-        stats = await state.build_stats_payload()
-        await manager.broadcast({"type": "stats.open", "payload": stats})
-    else:
-        await manager.broadcast({"type": "round.ready", "payload": {"round": phase_state["round"] + 1}})
+    await start_discussion_phase(round_index, evaluation.discussion)
 
 
-async def handle_set_secret(player_id: str, payload: Dict[str, Any]) -> None:
-    player = await state.get_player(player_id)
-    if not player or not player.is_host:
-        await manager.send_to(player_id, {"type": "error", "payload": {"message": "호스트만 설정할 수 있습니다."}})
-        return
-    secret = payload.get("secret", "").strip()
-    if not secret:
-        await manager.send_to(player_id, {"type": "error", "payload": {"message": "제시어를 입력하세요."}})
-        return
-    phase = (await state.to_public_state())["phase"]
-    if phase == "end":
-        await manager.send_to(player_id, {"type": "error", "payload": {"message": "게임이 종료되었습니다."}})
-        return
-    await state.set_secret(secret)
-    await manager.send_to(player_id, {"type": "host.secret.accepted", "payload": {"round": state.round + 1}})
-    await start_round_flow()
-
-
-async def handle_submit_word(player_id: str, payload: Dict[str, Any]) -> None:
-    current_state = await state.to_public_state()
-    if current_state["phase"] != "collecting":
-        await manager.send_to(player_id, {"type": "error", "payload": {"message": "지금은 제출할 수 없습니다."}})
-        return
-    if current_state["turn"] != player_id:
-        await manager.send_to(player_id, {"type": "error", "payload": {"message": "당신의 턴이 아닙니다."}})
-        return
-
-    word = (payload.get("word") or "").strip()
-    if not word:
-        await manager.send_to(player_id, {"type": "error", "payload": {"message": "단어를 입력하세요."}})
-        return
-    if len(word.split()) > 1:
-        await manager.send_to(player_id, {"type": "error", "payload": {"message": "단어는 공백 없이 입력하세요."}})
-        return
-
-    # Duplicate check
-    submissions = await state.get_round_submissions(state.round)
-    normalized = word.lower()
-    for submission in submissions.values():
-        if submission.word.lower() == normalized:
-            await manager.send_to(player_id, {"type": "error", "payload": {"message": "이미 제출된 단어입니다."}})
-            return
-
-    flags = []
-    lowered = word.lower()
-    for forbidden in hint_engine.rules.get("forbidden", []):
-        if forbidden.lower() in lowered:
-            flags.append("forbidden")
-            break
-    for spoiler in hint_engine.rules.get("spoilers", []):
-        if spoiler.lower() in lowered:
-            flags.append("too_direct")
-            break
-
-    await state.register_submission(player_id, word, flags)
-    await state.advance_turn()
-    await send_room_state()
-    await send_turn_event()
-
-    if await state.all_players_submitted():
-        await force_resolve()
-
-
-async def handle_chat(player_id: str, payload: Dict[str, Any]) -> None:
-    message = (payload.get("message") or "").strip()
-    if not message:
-        return
-    clean = mask_forbidden(message)
-    player = await state.get_player(player_id)
-    await manager.broadcast(
-        {
-            "type": "chat.message",
-            "payload": {
-                "playerId": player_id,
-                "name": player.name if player else "?",
-                "message": clean,
-                "ts": int(time.time() * 1000),
-            },
-        }
-    )
-
-
+# ---------------------------------------------------------------------------
+# Utility helpers
+# ---------------------------------------------------------------------------
 def mask_forbidden(message: str) -> str:
     result = message
-    for term in (*hint_engine.rules.get("forbidden", []), *hint_engine.rules.get("spoilers", [])):
+    for term in (*ai_agent.rules.get("forbidden", []), *ai_agent.rules.get("spoilers", [])):
         if not term:
             continue
         pattern = re.compile(re.escape(term), re.IGNORECASE)
@@ -354,11 +349,9 @@ def mask_forbidden(message: str) -> str:
     return result
 
 
-async def send_stats_to(player_id: str) -> None:
-    stats = await state.build_stats_payload()
-    await manager.send_to(player_id, {"type": "stats.open", "payload": stats})
-
-
+# ---------------------------------------------------------------------------
+# WebSocket endpoint
+# ---------------------------------------------------------------------------
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await manager.connect(websocket)
@@ -382,7 +375,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 name = payload.get("name", "")
                 existing_id = payload.get("playerId")
                 try:
-                    player, _ = await state.add_player(name, existing_id=existing_id)
+                    player = await state.add_player(name, existing_id=existing_id)
                 except RuntimeError as exc:
                     if str(exc) == "room_full":
                         await websocket.send_text(json.dumps({"type": "error", "payload": {"message": "방이 가득 찼습니다."}}))
@@ -402,23 +395,75 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         }
                     )
                 )
-                await send_room_state()
+                await broadcast_state()
                 continue
 
             if not player_id:
-                await websocket.send_text(json.dumps({"type": "error", "payload": {"message": "먼저 참여하세요."}}))
+                await websocket.send_text(json.dumps({"type": "error", "payload": {"message": "먼저 입장하세요."}}))
                 continue
 
-            if msg_type == "host.set_secret":
-                await handle_set_secret(player_id, payload)
+            if msg_type == "player.ready_toggle":
+                current = await state.get_public_state()
+                if current["phase"] not in {"lobby", "ready", "end"}:
+                    await manager.send_to(player_id, {"type": "error", "payload": {"message": "지금은 READY를 변경할 수 없습니다."}})
+                    continue
+                ready = await state.toggle_ready(player_id)
+                await manager.broadcast({"type": "player.ready", "payload": {"playerId": player_id, "ready": ready}})
+                await broadcast_state()
+            elif msg_type == "host.start_game":
+                player = await state.get_player(player_id)
+                if not player or not player.is_host:
+                    await manager.send_to(player_id, {"type": "error", "payload": {"message": "방장만 시작할 수 있습니다."}})
+                    continue
+                if not await state.all_ready():
+                    await manager.send_to(player_id, {"type": "error", "payload": {"message": "모든 플레이어가 READY 상태여야 합니다."}})
+                    continue
+                await cancel_timer()
+                await state.reset_game()
+                await broadcast_state()
+                await begin_round()
             elif msg_type == "submit.word":
-                await handle_submit_word(player_id, payload)
+                current = await state.get_public_state()
+                if current["phase"] != "submission":
+                    await manager.send_to(player_id, {"type": "error", "payload": {"message": "지금은 제출할 수 없습니다."}})
+                    continue
+                word = (payload.get("word") or "").strip()
+                if not word:
+                    await manager.send_to(player_id, {"type": "error", "payload": {"message": "단어를 입력하세요."}})
+                    continue
+                if len(word.split()) > 1:
+                    await manager.send_to(player_id, {"type": "error", "payload": {"message": "공백 없는 단어만 제출 가능합니다."}})
+                    continue
+                await state.record_submission(player_id, word)
+                await broadcast_state()
+                if await state.everyone_submitted():
+                    await finalize_round(current["round"], reason="all_submitted")
             elif msg_type == "chat.say":
-                await handle_chat(player_id, payload)
+                current = await state.get_public_state()
+                if current["phase"] not in {"discussion", "lobby", "ready"}:
+                    await manager.send_to(player_id, {"type": "error", "payload": {"message": "지금은 대화할 수 없습니다."}})
+                    continue
+                message_text = (payload.get("message") or "").strip()
+                if not message_text:
+                    continue
+                masked = mask_forbidden(message_text)
+                player = await state.get_player(player_id)
+                await manager.broadcast(
+                    {
+                        "type": "chat.message",
+                        "payload": {
+                            "playerId": player_id,
+                            "name": player.name if player else "?",
+                            "message": masked,
+                            "ts": int(time.time() * 1000),
+                        },
+                    }
+                )
             elif msg_type == "stats.request":
-                await send_stats_to(player_id)
+                stats = await state.build_stats()
+                await manager.send_to(player_id, {"type": "stats.open", "payload": stats})
             elif msg_type == "ping":
-                await manager.send_to(player_id, {"type": "pong", "payload": {"ts": int(time.time() * 1000)}})
+                await manager.send_to(player_id, {"type": "pong", "payload": {}})
             elif msg_type == "leave":
                 await manager.send_to(player_id, {"type": "left", "payload": {}})
                 break
@@ -430,7 +475,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         detached_id = await manager.unregister(websocket)
         if detached_id:
             await state.mark_disconnected(detached_id)
-            await send_room_state()
+            await broadcast_state()
 
 
 __all__ = ["app"]
