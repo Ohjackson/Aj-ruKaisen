@@ -5,6 +5,7 @@ import StagePanel from "./components/StagePanel.jsx";
 import StatsModal from "./components/StatsModal.jsx";
 import WinnerBanner from "./components/WinnerBanner.jsx";
 import HintModal from "./components/HintModal.jsx";
+import JoinModal from "./components/JoinModal.jsx";
 import WSClient from "./lib/ws.js";
 
 const STORAGE_ID = "akPlayerId";
@@ -59,7 +60,6 @@ export default function App() {
   const [round, setRound] = useState(0);
   const [timerMs, setTimerMs] = useState(0);
   const [players, setPlayers] = useState([]);
-  const [roomState, setRoomState] = useState(null);
   const [chatMessages, setChatMessages] = useState([]);
   const [prepInfo, setPrepInfo] = useState(null);
   const [discussionPrompt, setDiscussionPrompt] = useState("");
@@ -73,6 +73,12 @@ export default function App() {
   const apiBase = useMemo(() => computeApiBase(), []);
   const wsUrl = useMemo(() => computeWsUrl(apiBase), [apiBase]);
   const latestRoundRef = useRef(0);
+
+  useEffect(() => {
+    if (playerName && playerName === import.meta.env.VITE_HOST_PLAYER_NAME) {
+      setIsHost(true);
+    }
+  }, [playerName]);
 
   const enqueueHint = useCallback((payload) => {
     setHintQueue((prev) => [...prev, payload]);
@@ -98,7 +104,6 @@ export default function App() {
         break;
       }
       case "room.state": {
-        setRoomState(payload);
         setPhase(payload.phase);
         setRound(payload.round);
         setTimerMs(payload.timerMs || 0);
@@ -198,9 +203,28 @@ export default function App() {
     [sendMessage, playerId]
   );
 
+  const selfPlayer = useMemo(() => players.find((p) => p.id === playerId), [players, playerId]);
+  const allReady = useMemo(() => {
+    const connected = players.filter((p) => p.connected);
+    if (!connected.length) return false;
+    return connected.every((player) => player.ready);
+  }, [players]);
+
+  const currentSummary = roundSummaries[round] || [];
+  const phaseTheme = phaseThemeMap[phase] || "dawn";
+  const themeLabel = themeTitle[phaseTheme] || "Azure";
+  const canSubmit = phase === "submission";
+  const canChat = ["discussion", "lobby", "ready"].includes(phase);
+  const canToggleReady = ["lobby", "ready", "end"].includes(phase) && playerId;
+  const showStartButton = phase === "ready" && isHost;
+  const joined = Boolean(playerId);
+  const playerCount = players.length;
+  const isReady = Boolean(selfPlayer?.ready);
+
   const handleReadyToggle = useCallback(() => {
+    if (!canToggleReady) return;
     sendMessage("player.ready_toggle");
-  }, [sendMessage]);
+  }, [sendMessage, canToggleReady]);
 
   const handleStartGame = useCallback(() => {
     sendMessage("host.start_game");
@@ -229,20 +253,6 @@ export default function App() {
     setActiveHint(null);
   }, []);
 
-  const allReady = useMemo(() => {
-    if (!players.length) return false;
-    return players.filter((p) => p.connected).every((player) => player.ready);
-  }, [players]);
-
-  const currentSummary = roundSummaries[round] || [];
-  const phaseTheme = phaseThemeMap[phase] || "dawn";
-  const themeLabel = themeTitle[phaseTheme] || "Azure";
-  const canSubmit = phase === "submission";
-  const canChat = ["discussion", "lobby", "ready"].includes(phase);
-  const canToggleReady = ["lobby", "ready", "end"].includes(phase) && playerId;
-  const showStartButton = phase === "ready" && isHost;
-  const joined = Boolean(playerId);
-
   return (
     <div className={`app-shell theme-${phaseTheme}`}>
       <header className="top-bar">
@@ -252,44 +262,16 @@ export default function App() {
         </div>
         <div className="status-block">
           <span className={`connection ${connectionStatus}`}>{connectionStatus}</span>
+          <span className="player-meta">{joined ? playerName : "익명"} · {playerCount}명</span>
           {lastError && <span className="error-pill">{lastError}</span>}
         </div>
         <div className="control-block">
-          {!joined ? (
-            <form
-              className="join-form"
-              onSubmit={(event) => {
-                event.preventDefault();
-                const formData = new FormData(event.currentTarget);
-                const value = (formData.get("nickname") || "").toString().trim();
-                if (!value) return;
-                handleJoin(value);
-                event.currentTarget.reset();
-              }}
-            >
-              <input name="nickname" placeholder="닉네임" defaultValue={playerName} />
-              <button type="submit" disabled={connectionStatus !== "connected"}>
-                입장
-              </button>
-            </form>
-          ) : (
-            <div className="control-buttons">
-              <button onClick={handleReadyToggle} disabled={!canToggleReady} className={roomState?.players?.find((p) => p.id === playerId)?.ready ? "primary" : ""}>
-                READY
-              </button>
-              {showStartButton ? (
-                <button className="primary" onClick={handleStartGame} disabled={!allReady}>
-                  시작
-                </button>
-              ) : null}
-              <button onClick={handleRequestStats}>
-                통계
-              </button>
-              <a className="pdf-link" href={`${apiBase}/docs/5일차.pdf`} target="_blank" rel="noreferrer">
-                강의자료
-              </a>
-            </div>
-          )}
+          <button onClick={handleRequestStats} disabled={!joined}>
+            통계
+          </button>
+          <a className="pdf-link" href={`${apiBase}/docs/5일차.pdf`} target="_blank" rel="noreferrer">
+            강의자료
+          </a>
         </div>
       </header>
 
@@ -308,6 +290,12 @@ export default function App() {
           discussionPrompt={discussionPrompt}
           prepInfo={prepInfo}
           isHost={isHost}
+          isReady={isReady}
+          canToggleReady={canToggleReady}
+          onReadyToggle={handleReadyToggle}
+          showStartButton={showStartButton}
+          onStartGame={handleStartGame}
+          allReady={allReady}
           hasJoined={joined}
         />
 
@@ -322,6 +310,7 @@ export default function App() {
       </main>
 
       {activeHint && <HintModal result={activeHint} onClose={handleHintClose} />}
+      {!joined && <JoinModal defaultName={playerName} disabled={connectionStatus !== "connected"} onJoin={handleJoin} />}
       {winner && <WinnerBanner winner={winner} />}
       {statsVisible && stats && <StatsModal stats={stats} onClose={() => setStatsVisible(false)} />}
     </div>

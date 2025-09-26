@@ -27,27 +27,27 @@ a {
 }
 
 .app-shell.theme-dawn {
-  background: radial-gradient(circle at top, rgba(14, 165, 233, 0.45), rgba(59, 130, 246, 0.18)), linear-gradient(180deg, #111827 0%, #0f172a 100%);
+  background: radial-gradient(circle at top, rgba(255, 105, 180, 0.45), rgba(255, 20, 147, 0.18)), linear-gradient(180deg, #111827 0%, #0f172a 100%);
 }
 
 .app-shell.theme-night {
-  background: radial-gradient(circle at 20% 10%, rgba(59, 130, 246, 0.45), transparent 55%), linear-gradient(180deg, #020617 0%, #0b1120 100%);
+  background: radial-gradient(circle at 20% 10%, rgba(255, 105, 180, 0.45), transparent 55%), linear-gradient(180deg, #020617 0%, #0b1120 100%);
 }
 
 .app-shell.theme-day {
-  background: radial-gradient(circle at top, rgba(250, 204, 21, 0.35), transparent 60%), linear-gradient(180deg, #0ea5e9 0%, #1d4ed8 100%);
+  background: radial-gradient(circle at top, rgba(255, 105, 180, 0.35), transparent 60%), linear-gradient(180deg, #FF69B4 0%, #FF1493 100%);
 }
 
 .app-shell.theme-dusk {
-  background: radial-gradient(circle at top right, rgba(244, 114, 182, 0.35), transparent 60%), linear-gradient(180deg, #312e81 0%, #0f172a 100%);
+  background: radial-gradient(circle at top right, rgba(255, 105, 180, 0.35), transparent 60%), linear-gradient(180deg, #312e81 0%, #0f172a 100%);
 }
 
 .app-shell.theme-void {
-  background: radial-gradient(circle at center, rgba(56, 189, 248, 0.2), rgba(148, 163, 184, 0.1)), #020617;
+  background: radial-gradient(circle at center, rgba(255, 105, 180, 0.2), rgba(255, 20, 147, 0.1)), #020617;
 }
 
 .app-shell.theme-starfall {
-  background: radial-gradient(circle at center, rgba(217, 119, 6, 0.4), transparent 55%), linear-gradient(180deg, #111827 0%, #1f2937 100%);
+  background: radial-gradient(circle at center, rgba(255, 105, 180, 0.4), transparent 55%), linear-gradient(180deg, #111827 0%, #1f2937 100%);
 }
 
 .top-bar {
@@ -79,10 +79,15 @@ a {
 .connection {
   padding: 0.25rem 0.65rem;
   border-radius: 999px;
-  background: rgba(59, 130, 246, 0.2);
-  border: 1px solid rgba(59, 130, 246, 0.6);
+  background: rgba(255, 105, 180, 0.2);
+  border: 1px solid rgba(255, 105, 180, 0.6);
   font-size: 0.8rem;
   text-transform: capitalize;
+}
+
+.player-meta {
+  font-size: 0.85rem;
+  color: rgba(226, 232, 240, 0.85);
 }
 
 .connection.disconnected,
@@ -94,8 +99,8 @@ a {
 .error-pill {
   padding: 0.25rem 0.6rem;
   border-radius: 0.75rem;
-  background: rgba(244, 114, 182, 0.2);
-  border: 1px solid rgba(244, 114, 182, 0.4);
+  background: rgba(255, 20, 147, 0.2);
+  border: 1px solid rgba(255, 20, 147, 0.4);
   font-size: 0.8rem;
 }
 
@@ -131,8 +136,8 @@ button:disabled {
 }
 
 button.primary {
-  background: linear-gradient(135deg, #38bdf8, #6366f1);
-  box-shadow: 0 10px 25px rgba(59, 130, 246, 0.35);
+  background: linear-gradient(135deg, #FF69B4, #FF1493);
+  box-shadow: 0 10px 25px rgba(255, 20, 147, 0.35);
 }
 
 .join-form {
@@ -182,7 +187,7 @@ input {
 }
 
 .player-card.ready {
-  border-color: rgba(34, 197, 94, 0.6);
+  border-color: rgba(255, 105, 180, 0.6);
   transform: translateY(-2px);
 }
 
@@ -208,8 +213,8 @@ input {
 }
 
 .badge.host {
-  background: rgba(244, 114, 182, 0.2);
-  border-color: rgba(244, 114, 182, 0.4);
+  background: rgba(255, 20, 147, 0.2);
+  border-color: rgba(255, 20, 147, 0.4);
 }
 
 .badge.azure {
@@ -275,7 +280,7 @@ input {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: rgba(129, 140, 248, 0.9);
+  color: rgba(255, 105, 180, 0.9);
 }
 
 .round-badge {
@@ -294,7 +299,7 @@ input {
   flex-direction: column;
   gap: 0.4rem;
   padding: 0.75rem 1rem;
-  background: rgba(37, 99, 235, 0.25);
+  background: rgba(255, 105, 180, 0.25);
   border-radius: 0.75rem;
 }
 
@@ -314,6 +319,53 @@ input {
 
 .stage-body p {
   color: rgba(226, 232, 240, 0.8);
+}
+
+.ready-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.9rem;
+  margin-top: 1rem;
+}
+
+.ready-big {
+  width: min(60vw, 320px);
+  height: 120px;
+  border-radius: 999px;
+  font-size: 1.6rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  background: linear-gradient(135deg, rgba(255, 105, 180, 0.4), rgba(255, 20, 147, 0.25));
+  border: 2px solid rgba(255, 105, 180, 0.6);
+  text-transform: uppercase;
+}
+
+.ready-big.armed {
+  background: linear-gradient(135deg, rgba(255, 105, 180, 0.65), rgba(255, 20, 147, 0.55));
+  border-color: rgba(255, 105, 180, 0.85);
+  box-shadow: 0 15px 30px rgba(255, 105, 180, 0.35);
+}
+
+.ready-big:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.start-big {
+  padding: 0.85rem 2.4rem;
+  font-size: 1.1rem;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(255, 105, 180, 0.65), rgba(255, 20, 147, 0.65));
+  border: none;
+  box-shadow: 0 20px 30px rgba(255, 105, 180, 0.35);
+}
+
+.start-big:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  box-shadow: none;
 }
 
 .word-form {
@@ -338,7 +390,7 @@ input {
 }
 
 .prompt {
-  background: rgba(56, 189, 248, 0.16);
+  background: rgba(255, 105, 180, 0.16);
   padding: 0.8rem;
   border-radius: 0.8rem;
   font-size: 0.95rem;
@@ -404,7 +456,7 @@ input {
 
 .chat-name {
   font-weight: 600;
-  color: rgba(96, 165, 250, 0.9);
+  color: rgba(255, 105, 180, 0.9);
 }
 
 .chat-empty {
@@ -437,6 +489,10 @@ input {
   flex-direction: column;
 }
 
+.join-modal {
+  width: min(90vw, 420px);
+}
+
 .modal header,
 .modal footer,
 .modal .modal-footer {
@@ -459,6 +515,16 @@ input {
   display: flex;
   flex-direction: column;
   gap: 0.8rem;
+}
+
+.join-form-vertical {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.join-form-vertical input {
+  width: 100%;
 }
 
 .hint-modal {
@@ -511,7 +577,7 @@ input {
 }
 
 .winner-orb {
-  background: radial-gradient(circle at center, rgba(56, 189, 248, 0.8), rgba(59, 130, 246, 0.6));
+  background: radial-gradient(circle at center, rgba(255, 105, 180, 0.8), rgba(255, 20, 147, 0.6));
   border-radius: 50%;
   width: min(70vw, 360px);
   height: min(70vw, 360px);

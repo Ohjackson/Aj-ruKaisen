@@ -27,6 +27,11 @@ export default function StagePanel({
   discussionPrompt,
   prepInfo,
   isHost,
+  isReady,
+  canToggleReady,
+  onReadyToggle,
+  onStartGame,
+  allReady,
   hasJoined,
 }) {
   const [word, setWord] = useState("");
@@ -76,16 +81,29 @@ export default function StagePanel({
       <div className="stage-body">
         <h2>{headerText}</h2>
 
-        {phase === "lobby" && (
-          <p>닉네임을 입력하고 READY를 눌러주세요.</p>
-        )}
-
-        {phase === "ready" && (
-          <div className="start-block">
-            <p>모든 플레이어가 READY 상태가 되면 방장의 시작 버튼이 활성화됩니다.</p>
-            {showStartButton ? <p className="muted">컨트롤 패널에서 게임을 시작하세요.</p> : null}
+        {(phase === "lobby" || phase === "ready" || phase === "end") && hasJoined && (
+          <div className="ready-block">
+            <button
+              className={`ready-big ${isReady ? "armed" : ""}`}
+              onClick={onReadyToggle}
+              disabled={!canToggleReady}
+            >
+              {isReady ? "READY" : "READY"}
+            </button>
+            <p className="muted">
+              {isReady ? "Azure 신호가 감지되었습니다. 다른 플레이어를 기다리는 중." : "READY를 눌러 Azure 의식에 참여하세요."}
+            </p>
+            {showStartButton ? (
+              <button className="start-big" onClick={onStartGame} disabled={!allReady}>
+                Azure 의식 시작
+              </button>
+            ) : null}
+            {!showStartButton && phase === "ready" && !allReady ? <p className="muted">모든 플레이어가 READY가 되면 의식이 시작됩니다.</p> : null}
+            {phase === "end" ? <p className="muted">다시 플레이하려면 READY를 눌러주세요.</p> : null}
           </div>
         )}
+
+        {(phase === "lobby" || phase === "ready") && !hasJoined && <p>닉네임을 입력해 의식에 입장하세요.</p>}
 
         {phase === "submission" && (
           <form
