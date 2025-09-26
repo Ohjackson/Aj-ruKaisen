@@ -44,6 +44,10 @@
 
 `cp .env.example .env`로 기본 환경값을 복사해 사용할 수 있습니다.
 
+- `VITE_API_BASE` : 프론트에서 REST·정적 리소스를 호출할 백엔드 Origin (기본 `http://<호스트>:8000`)
+- `VITE_WS_PATH` / `VITE_WS_URL` : WebSocket 경로 또는 전체 URL (기본 `/ws` → `ws://<호스트>:8000/ws`)
+- `TURN_TIMER_SECONDS` : 서버 턴 타이머 기본값(초)
+
 ---
 
 ## 🚀 실행 가이드

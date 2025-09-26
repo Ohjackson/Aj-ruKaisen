@@ -15,6 +15,23 @@ const STORAGE_NAME = "akPlayerName";
 const initialPlayerId = () => localStorage.getItem(STORAGE_ID) || "";
 const initialPlayerName = () => localStorage.getItem(STORAGE_NAME) || "";
 
+const computeApiBase = () => {
+  const override = import.meta.env.VITE_API_BASE;
+  if (override) return override.replace(/\/$/, "");
+  const { protocol, hostname } = window.location;
+  const port = import.meta.env.VITE_API_PORT || "8000";
+  return `${protocol}//${hostname}:${port}`;
+};
+
+const computeWsUrl = (apiBase) => {
+  const override = import.meta.env.VITE_WS_URL;
+  if (override) return override;
+  const path = import.meta.env.VITE_WS_PATH || "/ws";
+  const url = new URL(apiBase);
+  const wsProtocol = url.protocol === "https:" ? "wss" : "ws";
+  return `${wsProtocol}://${url.host}${path}`;
+};
+
 export default function App() {
   const [wsClient, setWsClient] = useState(null);
   const [connectionStatus, setConnectionStatus] = useState("connecting");
@@ -34,6 +51,8 @@ export default function App() {
   const [pendingSecretRound, setPendingSecretRound] = useState(null);
   const [lastError, setLastError] = useState("");
   const currentRoundRef = useRef(0);
+  const apiBase = useMemo(() => computeApiBase(), []);
+  const wsUrl = useMemo(() => computeWsUrl(apiBase), [apiBase]);
 
   const handleMessage = useCallback(
     (event) => {
@@ -122,12 +141,7 @@ export default function App() {
   );
 
   useEffect(() => {
-    const path = import.meta.env.VITE_WS_PATH || "/ws";
-    const { protocol, host } = window.location;
-    const wsProtocol = protocol === "https:" ? "wss" : "ws";
-    const url = `${wsProtocol}://${host}${path}`;
-
-    const client = new WSClient(url, {
+    const client = new WSClient(wsUrl, {
       onOpen: () => setConnectionStatus("connected"),
       onClose: () => setConnectionStatus("disconnected"),
       onError: () => setConnectionStatus("error"),
@@ -138,7 +152,7 @@ export default function App() {
     return () => {
       client.close();
     };
-  }, [handleMessage]);
+  }, [handleMessage, wsUrl]);
 
   const sendMessage = useCallback(
     (type, payload = {}) => {
@@ -227,7 +241,7 @@ export default function App() {
               <span className="badge">대기 중</span>
             )}
           </div>
-          <a className="pdf-link" href="/docs/5일차.pdf" target="_blank" rel="noreferrer">
+          <a className="pdf-link" href={`${apiBase}/docs/5일차.pdf`} target="_blank" rel="noreferrer">
             강의자료 보기
           </a>
         </div>

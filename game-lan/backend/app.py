@@ -14,8 +14,12 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from .ai.pdf_engine import PdfHintEngine
-from .state import GameState
+try:
+    from .ai.pdf_engine import PdfHintEngine  # type: ignore
+    from .state import GameState  # type: ignore
+except ImportError:  # pragma: no cover - fallback when run as script
+    from ai.pdf_engine import PdfHintEngine
+    from state import GameState
 
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
