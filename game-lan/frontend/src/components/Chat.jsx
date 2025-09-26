@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 
+const formatTime = (ts) => {
+  if (!ts) return "--:--";
+  const date = new Date(ts);
+  return date.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
+};
+
 export default function Chat({ messages, onSend, disabled, placeholder }) {
   const [draft, setDraft] = useState("");
   const logRef = useRef(null);
@@ -26,6 +32,7 @@ export default function Chat({ messages, onSend, disabled, placeholder }) {
       <div className="chat-log" ref={logRef}>
         {messages.map((msg) => (
           <p key={`${msg.ts}-${msg.playerId}`}>
+            <span className="chat-time">{formatTime(msg.ts)}</span>
             <span className="chat-name">[{msg.name || msg.playerId}]</span> {msg.message}
           </p>
         ))}

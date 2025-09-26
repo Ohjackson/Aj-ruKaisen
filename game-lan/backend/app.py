@@ -11,10 +11,12 @@ from collections import deque
 from html import escape
 from pathlib import Path
 from typing import Any, Dict, Optional
+from datetime import datetime
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
+from pydantic import BaseModel
 
 DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
@@ -79,6 +81,17 @@ DASHBOARD_TEMPLATE = """
                     <th>Length</th>
                 </tr>
                 {secrets_table}
+            </table>
+        </div>
+        <div class="section">
+            <h2>Chat History</h2>
+            <table>
+                <tr>
+                    <th>Time</th>
+                    <th>Name</th>
+                    <th>Message</th>
+                </tr>
+                {chat_table}
             </table>
         </div>
         <div class="section">
@@ -189,6 +202,13 @@ def _resolve_path(default: Path, override: Optional[str]) -> Path:
     return candidate
 
 
+def format_timestamp(ms: int) -> str:
+    try:
+        return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:  # pragma: no cover - defensive fallback
+        return str(ms)
+
+
 PDF_PATH = _resolve_path(DOCS_DIR / "5일차.pdf", os.getenv("AI_PDF_PATH"))
 RULES_PATH = _resolve_path(BASE_DIR / "ai" / "rules.json", os.getenv("AI_RULES_PATH"))
 HINTS_ENABLED = os.getenv("AI_HINTS_ENABLED", "1").lower() not in {"0", "false", "off"}
@@ -214,6 +234,15 @@ state = GameState(
     transition_seconds=TRANSITION_SECONDS,
 )
 ai_agent = GeminiAgent(hints_enabled=HINTS_ENABLED)
+
+class LLMRequest(BaseModel):
+    prompt: str
+    temperature: Optional[float] = None
+
+
+class LLMResponse(BaseModel):
+    text: str
+    source: str
 
 
 class ConnectionManager:
@@ -296,6 +325,25 @@ async def get_config() -> JSONResponse:
     )
 
 
+@app.post("/llm", response_model=LLMResponse)
+async def invoke_llm(request: LLMRequest) -> LLMResponse:
+    prompt = (request.prompt or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="prompt must not be empty")
+    if not ai_agent.gemini_enabled:
+        raise HTTPException(status_code=503, detail="Gemini API not configured")
+
+    try:
+        text = await ai_agent.debug_generate(prompt=prompt, temperature=request.temperature)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("LLM debug call failed")
+        raise HTTPException(status_code=502, detail="Gemini request failed") from exc
+
+    return LLMResponse(text=text, source="gemini")
+
+
 @app.get("/docs/5일차.pdf")
 async def get_pdf() -> FileResponse:
     return FileResponse(PDF_PATH)
@@ -351,6 +399,20 @@ async def server_db_dashboard():
             "</tr>"
         )
 
+    chat_history = snapshot.get("chatHistory", [])
+    chat_table = ""
+    for entry in chat_history:
+        timestamp = format_timestamp(entry.get("ts", 0))
+        name = escape(entry.get("name", ""))
+        message = escape(entry.get("message", "")).replace("\n", "<br>")
+        chat_table += (
+            "<tr>"
+            f"<td>{timestamp}</td>"
+            f"<td>{name}</td>"
+            f"<td>{message}</td>"
+            "</tr>"
+        )
+
     raw_snapshot = escape(json.dumps(snapshot, ensure_ascii=False, indent=2))
 
     return DASHBOARD_TEMPLATE.format(
@@ -361,6 +423,7 @@ async def server_db_dashboard():
         players_table=players_table,
         submissions_table=submissions_table,
         secrets_table=secrets_table,
+        chat_table=chat_table,
         raw_snapshot=raw_snapshot,
     )
 
@@ -622,6 +685,16 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         }
                     )
                 )
+                logger.info("player joined: id=%s name=%s", player.id, player.name)
+                history = await state.get_chat_history()
+                if history:
+                    await manager.send_to(
+                        player_id,
+                        {
+                            "type": "chat.history",
+                            "payload": {"messages": history},
+                        },
+                    )
                 await broadcast_state()
                 continue
 
@@ -675,6 +748,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     continue
                 masked = mask_forbidden(message_text)
                 player = await state.get_player(player_id)
+                ts = int(time.time() * 1000)
+                await state.add_chat_message(
+                    player_id=player_id,
+                    name=player.name if player else "?",
+                    message=masked,
+                    timestamp=ts,
+                )
+                logger.info("chat from %s: %s", player.name if player else player_id, masked)
                 await manager.broadcast(
                     {
                         "type": "chat.message",
@@ -682,7 +763,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             "playerId": player_id,
                             "name": player.name if player else "?",
                             "message": masked,
-                            "ts": int(time.time() * 1000),
+                            "ts": ts,
                         },
                     }
                 )
@@ -693,6 +774,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 await manager.send_to(player_id, {"type": "pong", "payload": {}})
             elif msg_type == "leave":
                 await manager.send_to(player_id, {"type": "left", "payload": {}})
+                logger.info("player requested leave: %s", player_id)
                 break
             else:
                 await manager.send_to(player_id, {"type": "error", "payload": {"message": "알 수 없는 이벤트"}})

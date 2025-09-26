@@ -110,23 +110,20 @@ class GeminiAgent:
             source="local",
         )
 
-    async def _call_gemini(self, prompt: str, payload: Dict[str, Any]) -> str:
+    async def _call_gemini(self, prompt: str, payload: Optional[Dict[str, Any]], *, temperature: Optional[float] = None) -> str:
         if not self.gemini_enabled:
             raise RuntimeError("Gemini API is not configured")
 
-        url = f"{self.gemini_endpoint}" # I need to ask the user for the correct URL structure
-        
-        # The user needs to provide the correct payload structure for Gemini
-        gemini_payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": prompt},
-                        {"text": json.dumps(payload)}
-                    ]
-                }
-            ]
-        }
+        url = f"{self.gemini_endpoint}"
+
+        parts = [{"text": prompt}]
+        if payload is not None:
+            parts.append({"text": json.dumps(payload)})
+
+        gemini_payload: Dict[str, Any] = {"contents": [{"parts": parts}]}
+        target_temperature = temperature if temperature is not None else self.gemini_temperature
+        if target_temperature is not None:
+            gemini_payload["generationConfig"] = {"temperature": float(target_temperature)}
 
         headers = {
             "x-goog-api-key": self.gemini_key,
@@ -149,6 +146,11 @@ class GeminiAgent:
         if self.debug_enabled:
             logger.debug("[Gemini] Parsed text length: %s", len(content))
         return content
+
+    async def debug_generate(self, *, prompt: str, temperature: Optional[float] = None) -> str:
+        if not prompt.strip():
+            raise ValueError("Prompt must not be empty")
+        return await self._call_gemini(prompt, None, temperature=temperature)
 
 
 __all__ = [

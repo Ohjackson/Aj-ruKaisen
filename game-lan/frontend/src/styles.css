@@ -454,6 +454,14 @@ input {
   padding-right: 0.5rem;
 }
 
+.chat-time {
+  display: inline-block;
+  width: 3.5rem;
+  color: rgba(226, 232, 240, 0.6);
+  font-size: 0.85rem;
+  margin-right: 0.35rem;
+}
+
 .chat-name {
   font-weight: 600;
   color: rgba(255, 105, 180, 0.9);

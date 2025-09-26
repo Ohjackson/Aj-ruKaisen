@@ -69,14 +69,6 @@ export default function StagePanel({
         <div className="stage-timer">{formatMs(timerMs)}</div>
       </header>
 
-      {prepInfo && phase === "submission" ? (
-        <div className="prep-banner">
-          <span className="prep-theme">테마: {prepInfo.theme}</span>
-          {prepInfo.source === "azure" ? <span className="badge azure">Azure AI</span> : <span className="badge fallback">Fallback</span>}
-          {prepInfo.rationale ? <p className="prep-rationale">{prepInfo.rationale}</p> : null}
-        </div>
-      ) : null}
-
       <div className="stage-body">
         <h2>{headerText}</h2>
 

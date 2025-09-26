@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 import uuid
@@ -21,6 +22,7 @@ def _resolve_host_player_name() -> str:
 
 
 HOST_PLAYER_NAME = _resolve_host_player_name()
+logger = logging.getLogger("azure-kaisen.state")
 
 
 @dataclass
@@ -72,6 +74,7 @@ class GameState:
         self.submissions: Dict[int, Dict[str, Submission]] = {}
         self.secret_by_round: Dict[int, str] = {}
         self.hint_payloads: Dict[int, Dict[str, Any]] = {}
+        self.chat_history: List[Dict[str, Any]] = []
 
         self.lock = asyncio.Lock()
 
@@ -351,7 +354,26 @@ class GameState:
                     }
                     for round_index, round_subs in self.submissions.items()
                 },
+                "chatHistory": list(self.chat_history),
             }
+
+    async def add_chat_message(self, *, player_id: str, name: str, message: str, timestamp: int) -> None:
+        async with self.lock:
+            self.chat_history.append(
+                {
+                    "playerId": player_id,
+                    "name": name,
+                    "message": message,
+                    "ts": timestamp,
+                }
+            )
+            if len(self.chat_history) > 200:
+                self.chat_history = self.chat_history[-200:]
+        logger.info("chat[%s] %s: %s", timestamp, name, message)
+
+    async def get_chat_history(self) -> List[Dict[str, Any]]:
+        async with self.lock:
+            return list(self.chat_history)
 
 
 __all__ = ["GameState", "Player", "Submission"]

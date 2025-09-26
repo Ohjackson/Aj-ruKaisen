@@ -140,7 +140,11 @@ export default function App() {
         break;
       }
       case "chat.message": {
-        setChatMessages((prev) => [...prev.slice(-99), payload]);
+        setChatMessages((prev) => [...prev.slice(-199), payload]);
+        break;
+      }
+      case "chat.history": {
+        setChatMessages(payload.messages || []);
         break;
       }
       case "stats.open": {
